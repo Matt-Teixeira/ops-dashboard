@@ -57,8 +57,16 @@
     const cell = (text, cls) => { const td = document.createElement("td"); if (cls) td.className = cls; td.textContent = text; return td; };
 
     async function loadGrid() {
-      const r = await fetch("/api/jobs/latest").then((x) => x.json());
-      document.getElementById("meta").textContent = `· ${r.count} jobs · last ${r.lookbackDays}d`;
+      const res = await fetch("/api/jobs/latest");
+      const r = await res.json();
+      if (res.status === 503) {
+        document.getElementById("meta").textContent = "· warming up, retrying…";
+        setTimeout(loadGrid, 3000);
+        return;
+      }
+      const asOf = r.asOf ? new Date(r.asOf).toLocaleTimeString() : "—";
+      document.getElementById("meta").textContent =
+        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOf}` + (r.stale ? ` · ⚠ ${r.stale}` : "");
       const tb = document.querySelector("#grid tbody");
       tb.innerHTML = "";
       for (const j of r.jobs) {

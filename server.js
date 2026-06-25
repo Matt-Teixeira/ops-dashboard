@@ -11,6 +11,31 @@ const staleness = require("./lib/staleness");
 
 const GRID_LOOKBACK_DAYS = Number(process.env.GRID_LOOKBACK_DAYS || 7);
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
+const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
+
+// The job-grid query detoasts ~150 MB of verbose_log JSON over the lookback
+// window (~17s) -- far too slow for the request path. Since the underlying data
+// only changes every ~15 min, we run it on a background interval and serve the
+// last good snapshot instantly. Age/staleness are recomputed per-request from
+// the snapshot's lastRun timestamps so they stay live between refreshes.
+const gridSnapshot = { asOf: null, rows: null, error: null, refreshing: false };
+
+async function refreshGrid() {
+  if (gridSnapshot.refreshing) return;
+  gridSnapshot.refreshing = true;
+  const started = Date.now();
+  try {
+    gridSnapshot.rows = await queries.jobsLatest(GRID_LOOKBACK_DAYS);
+    gridSnapshot.asOf = new Date().toISOString();
+    gridSnapshot.error = null;
+    console.log(`[ops-dashboard] grid refreshed: ${gridSnapshot.rows.length} jobs in ${Date.now() - started}ms`);
+  } catch (err) {
+    gridSnapshot.error = err.message; // keep last good rows, if any
+    console.error("[ops-dashboard] grid refresh failed:", err.message);
+  } finally {
+    gridSnapshot.refreshing = false;
+  }
+}
 
 function buildApp() {
   const app = express();
@@ -26,32 +51,37 @@ function buildApp() {
     }
   });
 
-  // Job grid: latest run per (app, job) with status, duration, staleness.
-  app.get("/api/jobs/latest", async (_req, res, next) => {
-    try {
-      const rows = await queries.jobsLatest(GRID_LOOKBACK_DAYS);
-      const now = new Date();
-      const jobs = rows.map((r) => {
-        const lastRun = r.inserted_at;
-        const s = staleness.evaluate(r.app_name, r.job, lastRun, now);
-        return {
-          app: r.app_name,
-          job: r.job,
-          runId: r.run_id,
-          lastRun,
-          startedAt: r.started_at,
-          endedAt: r.ended_at,
-          durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
-          status: r.status,
-          issueCount: r.issue_count,
-          ageMs: s.ageMs,
-          stale: s.stale,
-        };
-      });
-      res.json({ lookbackDays: GRID_LOOKBACK_DAYS, count: jobs.length, jobs });
-    } catch (err) {
-      next(err);
+  // Job grid: latest run per (app, job). Served from the background snapshot;
+  // age/staleness computed live from each run's lastRun.
+  app.get("/api/jobs/latest", (_req, res) => {
+    if (!gridSnapshot.rows) {
+      return res.status(503).json({ error: gridSnapshot.error || "grid not warmed yet", asOf: null });
     }
+    const now = new Date();
+    const jobs = gridSnapshot.rows.map((r) => {
+      const lastRun = r.inserted_at;
+      const s = staleness.evaluate(r.app_name, r.job, lastRun, now);
+      return {
+        app: r.app_name,
+        job: r.job,
+        runId: r.run_id,
+        lastRun,
+        startedAt: r.started_at,
+        endedAt: r.ended_at,
+        durationMs: r.duration_ms == null ? null : Number(r.duration_ms),
+        status: r.status,
+        issueCount: r.issue_count,
+        ageMs: s.ageMs,
+        stale: s.stale,
+      };
+    });
+    res.json({
+      lookbackDays: GRID_LOOKBACK_DAYS,
+      asOf: gridSnapshot.asOf,
+      stale: gridSnapshot.error ? `last refresh failed: ${gridSnapshot.error}` : null,
+      count: jobs.length,
+      jobs,
+    });
   });
 
   // Error feed: recent WARN/ERROR events across the suite, newest first.
@@ -101,6 +131,10 @@ function start() {
   app.listen(port, () => {
     console.log(`[ops-dashboard] listening on :${port}`);
   });
+  // Warm the grid snapshot now, then keep it fresh in the background.
+  refreshGrid();
+  const timer = setInterval(refreshGrid, GRID_REFRESH_MS);
+  if (timer.unref) timer.unref();
 }
 
-module.exports = { buildApp, start };
+module.exports = { buildApp, start, refreshGrid };
