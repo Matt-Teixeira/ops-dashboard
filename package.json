@@ -1,0 +1,16 @@
+{
+  "name": "ops-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only ops dashboard over util.app_run_logs for the /opt/apps pipeline suite",
+  "main": "index.js",
+  "scripts": {
+    "serve": "node index.js serve",
+    "dev": "node --watch index.js serve"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg-promise": "^11.9.1"
+  }
+}

@@ -1,0 +1,25 @@
+services:
+  app:
+    image: node:lts
+    user: "105:987"
+    working_dir: /workspace
+    env_file:
+      - .env
+    environment:
+      HOME: /tmp
+      NPM_CONFIG_CACHE: /tmp/.npm
+    volumes:
+      - ./:/workspace
+      - /opt/resources/node_mod_cache/ops-dashboard:/workspace/node_modules
+      - /opt/run-logs/ops-dashboard:/opt/run-logs/ops-dashboard
+      - /opt/resources/ssl:/opt/resources/ssl:ro
+    ports:
+      - "8080:8080"        # dashboard UI/API -- change host port if 8080 is taken
+    command: ["node", "index.js", "serve"]
+    restart: unless-stopped
+    networks:
+      - pg_net
+
+networks:
+  pg_net:
+    external: true

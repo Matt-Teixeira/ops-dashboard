@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ops-dashboard</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 1.5rem; }
+    h1 { font-size: 1.2rem; margin: 0 0 .25rem; }
+    .muted { color: #888; font-size: .8rem; }
+    section { margin-top: 1.5rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #8883; white-space: nowrap; }
+    th { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: #888; }
+    .badge { display: inline-block; padding: .05rem .45rem; border-radius: .7rem; font-size: .72rem; font-weight: 600; color: #fff; }
+    .SUCCESS { background: #2e7d32; }
+    .WARN    { background: #ed6c02; }
+    .ERROR   { background: #c62828; }
+    .stale   { background: #6a1b9a; }
+    .err-msg { white-space: pre-wrap; max-width: 60ch; color: #c62828; font-family: ui-monospace, monospace; font-size: .76rem; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    button { font: inherit; padding: .2rem .6rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
+  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button></div>
+
+  <section>
+    <h2 style="font-size:.95rem">Job grid</h2>
+    <table id="grid"><thead><tr>
+      <th>App</th><th>Job</th><th>Status</th><th>Last run</th><th>Age</th>
+      <th>Duration</th><th>Issues</th><th>Run id</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2 style="font-size:.95rem">Error feed <span class="muted">(recent WARN/ERROR)</span></h2>
+    <table id="errors"><thead><tr>
+      <th>When</th><th>App</th><th>Type</th><th>Func</th><th>Message</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <script>
+    const fmtAge = (ms) => {
+      if (ms == null) return "—";
+      const s = Math.round(ms / 1000);
+      if (s < 90) return s + "s";
+      const m = Math.round(s / 60);
+      if (m < 90) return m + "m";
+      return Math.round(m / 60) + "h";
+    };
+    const fmtDur = (ms) => (ms == null ? "—" : ms < 1000 ? ms + "ms" : (ms / 1000).toFixed(1) + "s");
+    const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
+    const cell = (text, cls) => { const td = document.createElement("td"); if (cls) td.className = cls; td.textContent = text; return td; };
+
+    async function loadGrid() {
+      const r = await fetch("/api/jobs/latest").then((x) => x.json());
+      document.getElementById("meta").textContent = `· ${r.count} jobs · last ${r.lookbackDays}d`;
+      const tb = document.querySelector("#grid tbody");
+      tb.innerHTML = "";
+      for (const j of r.jobs) {
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(j.app));
+        tr.appendChild(cell(j.job));
+        const st = cell("");
+        const badge = document.createElement("span");
+        badge.className = "badge " + j.status;
+        badge.textContent = j.status;
+        st.appendChild(badge);
+        if (j.stale) { const s = document.createElement("span"); s.className = "badge stale"; s.textContent = "STALE"; s.style.marginLeft = ".3rem"; st.appendChild(s); }
+        tr.appendChild(st);
+        tr.appendChild(cell(fmtTime(j.lastRun)));
+        tr.appendChild(cell(fmtAge(j.ageMs), "num"));
+        tr.appendChild(cell(fmtDur(j.durationMs), "num"));
+        tr.appendChild(cell(j.issueCount, "num"));
+        tr.appendChild(cell(j.runId));
+        tb.appendChild(tr);
+      }
+    }
+
+    async function loadErrors() {
+      const r = await fetch("/api/errors?limit=100").then((x) => x.json());
+      const tb = document.querySelector("#errors tbody");
+      tb.innerHTML = "";
+      for (const e of r.events) {
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(fmtTime(e.dt)));
+        tr.appendChild(cell(e.app_name));
+        const ty = cell(""); const b = document.createElement("span"); b.className = "badge " + e.type; b.textContent = e.type; ty.appendChild(b); tr.appendChild(ty);
+        tr.appendChild(cell(e.func || "—"));
+        tr.appendChild(cell(e.err_msg || (e.note ? JSON.stringify(e.note) : "—"), "err-msg"));
+        tb.appendChild(tr);
+      }
+    }
+
+    async function refresh() {
+      try { await Promise.all([loadGrid(), loadErrors()]); }
+      catch (err) { document.getElementById("meta").textContent = "· error: " + err.message; }
+    }
+    document.getElementById("refresh").addEventListener("click", refresh);
+    refresh();
+  </script>
+</body>
+</html>

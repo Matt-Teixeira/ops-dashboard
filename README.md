@@ -19,8 +19,47 @@ It is **read-only** over the existing logging data. No writes back to the pipeli
 
 ## Status
 
-🌱 **Seed stage.** This repo currently contains only context/handoff docs (this file
-plus `docs/`). No code yet. Start from `docs/proposed-architecture.md`.
+🛠️ **v1 vertical slice scaffolded.** The job grid, error feed, and run drill-down
+are implemented against the live `util.app_run_logs` table (schema confirmed — see
+below). Stack: Node + Express + `pg-promise`, with a static vanilla-JS UI.
+
+### What works
+
+- `GET /api/jobs/latest` — latest run per `(app, job)`: status, duration, age, staleness.
+- `GET /api/errors?limit=N` — recent WARN/ERROR events across the suite, newest first.
+- `GET /api/runs/:run_id` — full event timeline for one run (drill-down).
+- `GET /healthz` — liveness + DB reachability.
+- `public/index.html` — single-page grid + error feed.
+
+### Confirmed against the live DB (`staging` on `pg_db`, 2026-06)
+
+- `verbose_log` / `warn_error_logs` are **`json`** (not `jsonb`, not `text`).
+- There **is** an `inserted_at timestamptz default now()` column with a DESC index —
+  used as the run clock. The table is **range-partitioned by month**, so every query
+  filters `inserted_at` for partition pruning (verified: subplans pruned to one partition).
+- Only **4 apps currently write to the DB**: `data_acquisition`, `hhm_rpp_philips`,
+  `hhm_rpp_ge`, `hhm_rpp_siemens` (siemens is near-dormant). `monday` / `reports` /
+  `acumatica_sync` / `part-source-pipeline` don't log to the DB yet — they'll appear
+  automatically once they do.
+- Job name = `verbose_log->0->'note'->'argv'->>2` for the `hhm_rpp_*` apps;
+  `data_acquisition` has no argv job (it fans out per `system_id`) → bucketed as `(default)`.
+
+## Running
+
+`node` is **not** installed on the host — this app runs in Docker, like the rest of
+the suite.
+
+```bash
+cp .env.example .env          # then set PGPASSWORD (see a sibling app's .env)
+# one-time host dirs (bind-mount targets):
+sudo install -d -o 105 -g 987 /opt/resources/node_mod_cache/ops-dashboard /opt/run-logs/ops-dashboard
+docker compose run --rm app npm install     # installs into the bind-mounted cache
+docker compose up -d                         # starts the server on :8080
+curl localhost:8080/healthz
+```
+
+Inside the container, PG is at `pg_db:5432` (`.env` default). From the host directly,
+use `PGHOST=localhost`.
 
 ## Where to start
 
