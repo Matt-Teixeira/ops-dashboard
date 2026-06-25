@@ -43,7 +43,7 @@ is reconstructed from the apps' insert code, not from a DDL file.
 - **Runtime:** Node.js. Apps connect to PG via either `pg` (raw `Pool`) or `pg-promise`.
 - **Job dispatch:** `node index.js <job_name>`; argv[2] is the job name, dispatched via a registry map. (For a long-running web server this app may instead have a `start` script — decide in architecture.)
 - **DB connection:** env vars with fallback chains, e.g. `process.env.PGHOST || process.env.PG_HOST`. SSL via `PG_SSLMODE` / `PG_SSL_PATH` (cert at `/opt/resources/ssl/pg_ssl.crt`).
-- **Deploy:** `docker compose`, external network `pg_net`, DB at `pg_db:5432`, run as `user: "105:987"`, `node_modules` bind-mounted from `/opt/resources/node_mod_cache/ops-dashboard`.
+- **Deploy:** runs in a Docker container like every other app here (required), on the external `pg_net` network, DB at `pg_db:5432`, run as `user: "105:987"`, `node_modules` bind-mounted from `/opt/resources/node_mod_cache/ops-dashboard`. **Unlike** the batch apps (one-shot `docker compose run` cron jobs), this is a **long-running service**: `docker compose up -d`, published port, `command: node index.js serve`. See `docs/infra-conventions.md`.
 - **Logging:** reuse the suite's logger pattern (`utils/logger/`) — `addLogEvent` / `writeLogEvents` / `dbInsertLogEvents` / `makeAppRunLog`. The dashboard can log its own runs into `util.app_run_logs` under `app_name = "ops-dashboard"` for self-monitoring (nice touch, optional).
 
 ## Working agreement

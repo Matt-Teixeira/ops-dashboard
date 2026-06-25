@@ -3,6 +3,20 @@
 Copy-pasteable conventions drawn from the other `/opt/apps` apps so `ops-dashboard`
 matches the house style and deploys cleanly on the same host.
 
+## Deployment model (required)
+
+**`ops-dashboard` runs in a Docker container, like every other app in `/opt/apps`** —
+on the same host, attached to the same `pg_net` network. This is a hard requirement,
+not a default.
+
+One important difference from the rest of the suite: the other apps are **one-shot
+batch jobs** invoked by cron (`docker compose run --rm app node index.js <job>`, run to
+completion, exit). This dashboard is a **long-running service** — so it deploys with
+`docker compose up -d`, exposes a **published port**, and its `command` starts a server
+(`node index.js serve`) that stays up. Don't pattern-match the batch apps' run style for
+the main process. (A future *batch* job here — e.g. a nightly digest email — would still
+follow the one-shot cron pattern alongside the service.)
+
 ## docker-compose
 
 - External network: **`pg_net`** (`external: true`). All apps attach to it; the DB is
