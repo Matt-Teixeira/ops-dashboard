@@ -40,10 +40,10 @@ Git Commit:
   - `SIEMENS_CV`: removed its false 30-min entry — it is in neither cron file and has
     no runs in 30 days (absent from the grid). Left intentionally unknown (stale=null),
     documented inline.
-  - `data_acquisition/(default)`: retuned to `everyMin: 5, graceMin: 5` (10-min stall
-    budget, ~3.5× the observed p90 gap of 2.8 min) so it flags a full-pipeline stall
-    without flapping; documented that `everyMin` here is a silence budget, not a literal
-    schedule.
+  - `data_acquisition/(default)`: a stall budget (not a literal schedule), set to
+    `everyMin: 20, graceMin: 10` (30 min) above the MAX normal inter-run gap so it
+    flags a full-pipeline stall without flapping. (Initially shipped at 10 min sized
+    on p90; corrected in the budget-fix follow-up — see Review Notes.)
   - Recorded the known wall-clock schedules (`monday/EQUIPMENT_RTT 25 7 * * *`,
     `acumatica 20 7 * * *`, `part-source/INV_FEED_SYNC 0 6 * * *`) as commented future
     entries — deferred until a cron evaluator and those apps' logs exist.
@@ -56,13 +56,14 @@ Git Commit:
   `stale === null` row now renders a muted `? CADENCE` badge (new `.unknown` class) so
   an unknown-cadence job is never visually mistaken for a healthy one.
 - `test/staleness.test.js`: +7 tests (configured Philips variant, SIEMENS_CV stays
-  null, the (default) 10-min budget within/over, `isConfigured`, `coverage`).
+  null, the (default) stall budget within/over, `isConfigured`, `coverage`).
 
 ## Schema Facts Confirmed (live DB)
 
 - Re-ran `notes/schedule-cadence-probe.sql` as `ops_dashboard_ro`: every active
   ge/philips grid job (incl. all 15 Philips variants) = 30.0 min median gap;
-  `data_acquisition/(default)` = 0.4 min median / 2.8 min p90 (3-day window).
+  `data_acquisition/(default)` = 0.4 min median / 2.8 p90 / 10.1 p99 / 12.3 max
+  (7-day window) — the basis for the 30-min stall budget.
 - 30-day grid set = 23 (app, job) pairs (matches the cache). `hhm_rpp_siemens` has
   only `SIEMENS_CT` and `SIEMENS_MRI` (both ~407 h / ~17 d idle, dormant); there is
   **no** `SIEMENS_CV` in the grid or cron — confirming it must be unknown, not 30 min.
@@ -71,12 +72,14 @@ Git Commit:
 
 ## Important Decisions
 
-### data_acquisition/(default) stall budget = 10 min
+### data_acquisition/(default) stall budget = 30 min
 
-Decision: `everyMin: 5, graceMin: 5` (10-min budget), down from the 15/15 placeholder.
-Reason: it is the aggregate of many staggered sub-jobs (median gap 0.4 min, p90 2.8
-min), so a meaningful signal is "the whole pipeline went silent." 10 min is ~3.5× p90
-— flags a real stop within ~10 min without flapping on normal idle.
+Decision: `everyMin: 20, graceMin: 10` (30-min budget). It is the aggregate of many
+staggered sub-jobs, so a meaningful signal is "the whole pipeline went silent."
+Reason: the budget must clear the MAX normal inter-run gap or it flaps. The 7-day gap
+distribution is median 0.4 / p90 2.8 / p99 10.1 / max 12.3 min, so 30 min (~2.4× max)
+flags a real stop without false positives. (Shipped initially at 10 min sized on p90,
+which sat below the max gap; corrected in the budget-fix follow-up — see Review Notes.)
 Tradeoff: `everyMin` is being used as a silence budget, not a literal interval;
 documented inline. Per-system_id staleness stays out of scope (one (default) bucket).
 
