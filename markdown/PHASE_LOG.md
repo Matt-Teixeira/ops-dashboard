@@ -127,20 +127,29 @@ Manual / smoke tests (service live on :8080, static file served from bind mount)
 
 Source:
 
-- Self-review against `markdown/REVIEW_CHECKLIST.md` (walked below). No external
-  handoff generated for this frontend-only phase.
+- Self-review against `markdown/REVIEW_CHECKLIST.md` (walked below), then an
+  external (Codex) review against `notes/review_handoff_phase_5.md`.
 
 Critical issues:
 
 - None.
 
-Accepted fixes:
+Accepted fixes (subsequent commit):
 
-- None.
+- (low) `showRun` had no stale-response guard — opening run A then B (or
+  navigating back) could render the slower fetch into a stale/hidden view. Added a
+  monotonic `runReq` token bumped on every navigation; responses that no longer
+  match the active route are ignored.
+- (low) 404 copy wrongly blamed the "30-day window" (that's the grid cache, not
+  the DB, which the drill-down reads directly). Changed to "Run not found, or the
+  timestamp hint no longer matches this run."
+- (low) Error-feed rows were mouse-only `<tr>`s. Added `tabindex=0`, `role=link`,
+  and Enter/Space activation so they match the grid's `<a>` entry points.
 
 Deferred findings:
 
-- None.
+- None. No XSS found (log-derived values go through textContent); the error-feed
+  `className = "badge " + e.type` is cosmetic class assignment, not HTML.
 
 ## Problems Encountered
 

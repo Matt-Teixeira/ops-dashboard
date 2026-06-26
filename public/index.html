@@ -127,7 +127,13 @@
         // minutes of its inserted_at, so dt prunes to the right partition.
         if (e.run_id) {
           tr.className = "clickable";
-          tr.addEventListener("click", () => { location.hash = runHash(e.run_id, e.dt); });
+          tr.tabIndex = 0;
+          tr.setAttribute("role", "link");
+          const go = () => { location.hash = runHash(e.run_id, e.dt); };
+          tr.addEventListener("click", go);
+          tr.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); }
+          });
         }
         tr.appendChild(cell(fmtTime(e.dt)));
         tr.appendChild(cell(e.app_name));
@@ -286,7 +292,13 @@
       }
     }
 
+    // Monotonic token: every navigation (showRun or showDashboard) bumps it, so a
+    // slower in-flight run fetch that resolves after the user moved on is ignored
+    // instead of rendering into a stale or hidden view.
+    let runReq = 0;
+
     async function showRun(runId, hint) {
+      const myReq = ++runReq;
       document.getElementById("dashboard").hidden = true;
       const view = document.getElementById("run-view");
       view.hidden = false;
@@ -296,19 +308,22 @@
       let res;
       const url = "/api/runs/" + encodeURIComponent(runId) + (hint ? "?inserted_at=" + encodeURIComponent(hint) : "");
       try { res = await fetch(url); }
-      catch { return renderRunMessage(view, "Couldn't load this run."); }
+      catch { if (myReq === runReq) renderRunMessage(view, "Couldn't load this run."); return; }
+      if (myReq !== runReq) return; // superseded by a newer navigation
 
       if (res.status === 400) return renderRunMessage(view, "Invalid run id.");
-      if (res.status === 404) return renderRunMessage(view, "Run not found — it may have aged out of the 30-day window.");
+      if (res.status === 404) return renderRunMessage(view, "Run not found, or the timestamp hint no longer matches this run.");
       if (!res.ok) return renderRunMessage(view, "Couldn't load this run.");
 
       let data;
       try { data = await res.json(); }
-      catch { return renderRunMessage(view, "Couldn't load this run."); }
+      catch { if (myReq === runReq) renderRunMessage(view, "Couldn't load this run."); return; }
+      if (myReq !== runReq) return;
       renderRun(view, data);
     }
 
     function showDashboard() {
+      runReq++; // invalidate any in-flight run fetch so it can't render after we leave
       document.getElementById("run-view").hidden = true;
       document.getElementById("dashboard").hidden = false;
       if (!dashboardLoaded) refresh();
