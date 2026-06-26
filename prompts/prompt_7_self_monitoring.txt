@@ -1,52 +1,122 @@
 Phase 7 - Self-Monitoring
 
 Goal:
-Let ops-dashboard log its own runs into util.app_run_logs under
-app_name = "ops-dashboard", so the dashboard appears in its own job grid and any
-self-failures are visible the same way pipeline failures are.
+Let ops-dashboard log its own health into util.app_run_logs under
+app_name = "ops-dashboard", so the dashboard appears in its own job grid and a
+self-failure (refresh errors, or the process dying) is visible the same way a
+pipeline failure is.
 
-Background:
-This is the one sanctioned exception to "do not write pipeline tables": the
-read-only rule permits writing rows whose app_name is exactly "ops-dashboard".
-The suite already has a shared logger pattern (addLogEvent / writeLogEvents /
-dbInsertLogEvents / makeAppRunLog) to reuse.
+Background / what changed (verified this session - do not rediscover):
+- This is the ONE sanctioned exception to the read-only rule
+  (ARCHITECTURE_PRINCIPLES): write ONLY rows whose app_name is exactly
+  "ops-dashboard".
+- There is NO Phase 4 batch job. Phase 4 chose Option B (an in-process incremental
+  cache inside the long-running `serve` process), so the only process is `serve`.
+  The self-monitoring unit is therefore a periodic HEARTBEAT run emitted by serve
+  (plus surfacing refresh failures) - not a batch job. A future digest/batch job
+  would also self-log, but none exists yet.
+- ops-dashboard has NO utils/ logger today (it logs to console). Port from the
+  suite's logger: reports/utils/logger/{log.js,enums.js} - makeAppRunLog(),
+  addLogEvent(type, run_log, func, tag, note, err), writeLogEvents(run_log) [file],
+  dbInsertLogEvents(pgp, run_log) [DB row via
+  pgp.helpers.insert(app_run_log, pg_column_sets.util.app_run_logs); db.none(query)].
+- Insert shape (ColumnSet in part-source-pipeline/utils/db/sql/pg-helpers.js):
+  ['app_name','run_id','verbose_log','warn_error_logs'] into util.app_run_logs;
+  inserted_at defaults to now(); verbose_log/warn_error_logs are json.
+- The grid/cache derive job = verbose_log->0->'note'->'argv'->>2 (COALESCE to
+  "(default)"). So a self-log's FIRST event must carry note.argv[2] = the job name,
+  or it buckets as "(default)".
+- /opt/run-logs/ops-dashboard is mounted (file logging possible; secondary).
+- No `ops` schema exists yet (only public + util); creating one plus the writer
+  function is a superuser/admin step.
 
 Scope:
-- Reuse the suite's logger pattern to emit a run log for batch invocations (e.g.
-  the Phase 4 summary refresh job, a future digest job). Decide whether the
-  long-running serve process logs periodic heartbeats or only batch jobs log.
-- Writing requires more than the read-only role. Introduce a narrowly-scoped path:
-  the writer may INSERT only rows with app_name = "ops-dashboard" into
-  util.app_run_logs and nothing else. Enforce at the credential/role level, not
-  just in code (e.g. a dedicated writer role + a row-level or trigger guard, or a
-  separate insert function). Document the exact grant.
-- Confirm the insert shape matches the ColumnSet the suite uses
-  (app_name, run_id, verbose_log, warn_error_logs); inserted_at defaults to now().
+- Port a minimal logger to ops-dashboard/utils/logger/ (log.js + enums.js) modeled
+  on reports/. The DB row is what the grid reads (required); the JSON file to
+  /opt/run-logs/ops-dashboard is optional/secondary.
+- Emit a periodic heartbeat run from serve (cadence via a new env, e.g.
+  SELF_LOG_INTERVAL_MS). Each heartbeat assembles a run_log whose FIRST event sets
+  note.argv[2] to the chosen job name (decide: "serve" or "heartbeat"), captures the
+  dashboard's own health, then writes ONE row. Health to capture: DB reachable, last
+  grid refresh phase/asOf/duration, cache size, coverage.unknown, lastError. If the
+  last refresh failed (or the read side saw the DB unreachable), emit a WARN/ERROR
+  event so the row's derived status is WARN/ERROR and it shows in the error feed.
+- Gate self-logging behind an env flag (e.g. SELF_LOG_ENABLED, default OFF) so the
+  dashboard stays fully read-only until the writer path is provisioned.
+- Writer least-privilege - enforce at the DB, NOT in app code:
+  * RECOMMENDED: a SECURITY DEFINER function in a schema we own (create `ops`), e.g.
+    ops.log_ops_dashboard_run(run_id uuid, verbose_log json, warn_error_logs json)
+    that HARD-CODES app_name='ops-dashboard' and inserts into util.app_run_logs. The
+    app connects as a minimal writer role (ops_dashboard_rw) granted EXECUTE on that
+    function ONLY - no direct INSERT on util.app_run_logs. Writing any other app_name
+    (or any other table) is then impossible by construction.
+  * DO NOT add a trigger or enable RLS on util.app_run_logs - it is the shared,
+    partitioned, pipeline-owned table; altering it could break the pipeline apps'
+    inserts and violates "don't touch pipeline tables."
+  * Provide the admin setup as a committed SQL file (db/setup-writer-role.sql): the
+    `ops` schema, the function (owned by a role that CAN insert into
+    util.app_run_logs), the ops_dashboard_rw login role, and GRANT EXECUTE. Mirror
+    db/setup-readonly-role.sql's style (idempotent; password via -v ro_pw=...).
+- Add a SEPARATE writer DB connection (the writer role) - keep the read pool
+  (ops_dashboard_ro) and the entire read path unchanged.
+- Add a config/schedules.js entry for ops-dashboard/<job> matching the heartbeat
+  cadence, so the dashboard's own row shows a real stale state, not "? CADENCE"
+  (Phase 6 coverage). Note: a dead process / DB outage means no heartbeat is written,
+  so the row simply ages out to STALE - which is the correct "dashboard is down"
+  signal (you cannot self-log that the DB is unreachable).
 
 Non-goals:
 - Do not write any row with app_name != "ops-dashboard".
-- Do not change the read path or the read-only role used for queries.
-- Do not log secrets into verbose_log.
+- Do not change the read path, the read-only role, or any pipeline table's structure
+  (no triggers / RLS / DDL on util.app_run_logs).
+- Do not log secrets (.env values, passwords, connection strings, cred-bearing
+  stacks) into verbose_log.
+- No alerting/paging.
+
+Note on size: this is the largest phase (logger + writer role + SECURITY DEFINER
+function + schema + heartbeat + config + tests). The planner may split it - 7a:
+provision the writer path and emit a minimal heartbeat row that appears in the grid;
+7b: enrich health signals + failure surfacing. Get sign-off on the split if so.
 
 Expected files / layers:
-- utils/logger/ (reuse/port the suite pattern), the batch job(s), a writer DB
-  path/role, ENVIRONMENT.md (new vars/role), tests.
+- ops-dashboard/utils/logger/{log.js,enums.js} (ported minimal), a heartbeat module
+  (in server.js or jobs/), a writer pg connection, db/setup-writer-role.sql (+ the
+  function DDL), config/schedules.js entry, .env.example + markdown/ENVIRONMENT.md
+  (writer role vars, SELF_LOG_ENABLED, interval), tests.
 
 Expected validation:
-- node --test for the log assembly.
-- Live: run a batch job, confirm exactly one ops-dashboard row appears, and confirm
-  the writer is denied writing any other app_name (negative test).
+- node --test for log assembly (events -> run_log -> {app_name, run_id, verbose_log,
+  warn_error_logs}; the job name lands in note.argv[2]; a failed refresh yields a
+  WARN/ERROR event). Keep the assembly pure/injectable (no live DB in unit tests).
+- Live: provision the writer (db/setup-writer-role.sql) as superuser; with
+  SELF_LOG_ENABLED on, run serve and confirm exactly ONE ops-dashboard heartbeat row
+  per interval, appearing in /api/jobs/latest as ops-dashboard/<job> with a real
+  status + cadence.
+- Negative test (the crux): as ops_dashboard_rw, confirm a direct INSERT into
+  util.app_run_logs is DENIED, and that the function cannot be coerced into writing
+  any other app_name. Confirm ops_dashboard_ro still cannot write at all.
 
 Read-only / least-privilege constraints:
-- This is the ONLY sanctioned write, scoped to app_name = "ops-dashboard".
-- The query/read role stays read-only; the writer role is separate and minimal.
+- This is the ONLY sanctioned write, scoped to app_name='ops-dashboard' BY THE DB
+  (the SECURITY DEFINER function), not by app code alone.
+- The query/read role (ops_dashboard_ro) stays read-only and unchanged; the writer is
+  a separate, minimal credential with EXECUTE-only on the log function.
 
-Schema assumptions to confirm live:
-- The exact column set and types for an insert; that inserted_at defaults to now().
-- Whether a role/trigger can constrain inserts to a single app_name on this DB.
+Schema assumptions to confirm live (before coding):
+- The exact insert shape/types (app_name text, run_id uuid, verbose_log json,
+  warn_error_logs json, inserted_at timestamptz default now()).
+- That an admin can create the `ops` schema + a SECURITY DEFINER function inserting
+  into util.app_run_logs, and that ops_dashboard_rw with EXECUTE-only works.
+- That a now()-stamped insert always lands in an existing partition (current month
+  exists; confirm there is no missing-partition gap for the insert date).
 
 Review questions:
-- Is it provably impossible for the writer to write another app's rows (role-level)?
+- Is it provably impossible (role-level, not just code) for the writer to write
+  another app_name or any other table? Did the negative tests pass?
+- Does a self-failure actually surface (refresh error -> WARN/ERROR row -> error feed
+  + status badge), and does a dead process / DB-down show as the ops-dashboard row
+  going STALE?
+- Is the read path / read role completely unchanged?
 - Are secrets kept out of verbose_log?
-- Does the self-log show up correctly in the existing grid/error views?
-- Is the writer credential separate from the read credential?
+- Does ops-dashboard appear in its own grid with the right (app, job) and a real cadence?
+- Is self-logging opt-in (flag OFF by default) until the writer role exists?
