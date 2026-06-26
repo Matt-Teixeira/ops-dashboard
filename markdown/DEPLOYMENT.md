@@ -12,9 +12,12 @@ installed on the host — all build/run happens in containers.
 psql -h <host> -U postgres -d staging -v ro_pw='<choose-strong-pw>' \
   -f db/setup-readonly-role.sql
 
-# 2. Bind-mount target dirs, owned by the svc user/group (105:987):
-#    (creatable without sudo if you're in the docker group and parents are setgid)
-install -d /opt/resources/node_mod_cache/ops-dashboard /opt/run-logs/ops-dashboard
+# 2. Bind-mount target dirs, owned by the svc user/group (UID 105 / GID 987) so
+#    the container (which runs as 105:987) can write node_modules into the cache:
+sudo install -d -o 105 -g 987 \
+  /opt/resources/node_mod_cache/ops-dashboard /opt/run-logs/ops-dashboard
+#    (If you're in the docker group and the parent dirs are setgid + group-writable,
+#     plain `install -d` also works, since the container runs as GID 987.)
 
 # 3. Env file:
 cp .env.example .env

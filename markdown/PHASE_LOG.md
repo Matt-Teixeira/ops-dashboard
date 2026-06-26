@@ -20,7 +20,11 @@ Prompt:
 `prompts/prompt_0_workflow_scaffold.txt`
 
 Git Commit:
-Pending
+8e4d7fb (scaffold); review fixes follow in a subsequent commit
+
+Review Artifacts:
+- Review handoff: `notes/review_handoff_phase_0.md`
+- Review results: external (Codex) — 4 findings (2 medium, 1 low, 1 nit), all addressed
 
 ## Goals
 
@@ -48,6 +52,30 @@ Pending
 ## Validation
 
 - Workflow files exist; `git status` reviewed. No app build required.
+- Post-review: corrected `db/setup-readonly-role.sql` tested live (idempotent
+  re-run succeeds; the previous DO-body form fails with `syntax error at or near ":"`,
+  confirming the bug).
+
+## Review Notes
+
+Source: external (Codex) on `notes/review_handoff_phase_0.md`.
+
+Accepted fixes:
+
+- `db/setup-readonly-role.sql`: `:'ro_pw'` was interpolated inside a `DO $$..$$`
+  body where psql does not expand it -> invalid PL/pgSQL. Rewrote with `\gexec` +
+  `ALTER ROLE` outside any dollar-quoted body. (medium)
+- `markdown/DEPLOYMENT.md`: bind-mount dirs now created with
+  `sudo install -d -o 105 -g 987 ...` to match the stated ownership. (medium)
+- `prompts/prompt_4_summary_table.txt`: made the role split firm (DDL by an
+  admin/migration role, reads on `ops_dashboard_ro`, a separate minimal writer) so
+  a future phase can't "solve" it by expanding the read role. (low)
+- This entry's commit SHA recorded instead of "Pending". (nit)
+
+Deferred findings:
+
+- None. No secret values were found in the docs (the `PGPASSWORD=<...>` text is a
+  placeholder).
 
 ## Commit Readiness
 

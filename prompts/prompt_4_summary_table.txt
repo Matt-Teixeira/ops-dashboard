@@ -24,9 +24,14 @@ Scope:
 - Decide and document the refresh trigger: in-process interval vs. external cron
   invocation of the batch job. Prefer the batch-job pattern the suite already uses,
   with the in-process interval as a fallback.
-- Provide the table DDL and grants as a committed SQL file (db/), and grant the
-  read-only role SELECT on it (the refresh job may need a separate writer role
-  scoped to the ops schema only - decide and document).
+- Provide the table DDL and grants as a committed SQL file (db/). Role split is
+  fixed by rule, not an open question:
+  * DDL (CREATE SCHEMA/TABLE) is applied by an admin/migration role - NEVER by
+    ops_dashboard_ro, which by the Least-Privilege Rule cannot create objects.
+  * The grid reader keeps using ops_dashboard_ro, granted SELECT on the summary
+    table only.
+  * The refresh writer is a SEPARATE, minimal role that can write ONLY the owned
+    summary schema and read util.app_run_logs - never write any pipeline table.
 
 Non-goals:
 - Do not change /api/errors or /api/runs/:run_id behavior.
@@ -52,7 +57,8 @@ Read-only / least-privilege constraints:
 - The writer must never touch util.* or any pipeline table.
 
 Schema assumptions to confirm live (before coding):
-- Can this DB user create a schema/table we own? If not, what role/grant is needed?
+- Identify the admin/migration role that will apply the DDL (NOT ops_dashboard_ro)
+  and confirm the writer role can be scoped to the owned summary schema only.
 - Confirm the watermark approach handles late-arriving rows (inserted_at default
   now() - are there out-of-order inserts? backfill?).
 - Re-confirm json field paths used for status/job/duration still hold.

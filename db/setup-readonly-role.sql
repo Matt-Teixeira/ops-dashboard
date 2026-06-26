@@ -1,7 +1,8 @@
 -- db/setup-readonly-role.sql
 -- One-time setup of the least-privilege role ops-dashboard connects as.
 -- Run as a superuser against the database that holds util.app_run_logs:
---   psql -h <host> -U postgres -d staging -f db/setup-readonly-role.sql
+--   psql -h <host> -U postgres -d staging -v ro_pw='choose-a-strong-password' \
+--     -f db/setup-readonly-role.sql
 --
 -- The dashboard is read-only, so its credential should be too. This role can
 -- ONLY connect and SELECT from util.app_run_logs -- no writes, no DDL, no other
@@ -10,22 +11,22 @@
 
 \set ON_ERROR_STOP on
 
--- Set a real password before running (or ALTER it afterwards):
---   \set ro_pw 'choose-a-strong-password'
+-- Require the password variable (must be set with -v ro_pw=...).
 \if :{?ro_pw}
 \else
-  \echo 'ERROR: set :ro_pw first, e.g.  psql -v ro_pw=secret -f db/setup-readonly-role.sql'
+  \echo 'ERROR: set ro_pw first, e.g.  psql -v ro_pw=secret -f db/setup-readonly-role.sql'
   \quit
 \endif
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_dashboard_ro') THEN
-    EXECUTE format('CREATE ROLE ops_dashboard_ro WITH LOGIN PASSWORD %L', :'ro_pw');
-  ELSE
-    EXECUTE format('ALTER ROLE ops_dashboard_ro WITH LOGIN PASSWORD %L', :'ro_pw');
-  END IF;
-END$$;
+-- Create the role only if it does not already exist. psql expands :'ro_pw' here
+-- because it sits in a normal SQL string (NOT a dollar-quoted body, where
+-- interpolation would not happen); \gexec then runs the generated statement.
+SELECT format('CREATE ROLE ops_dashboard_ro LOGIN PASSWORD %L', :'ro_pw')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_dashboard_ro')
+\gexec
+
+-- Ensure the password is set (idempotent; safe whether or not the role existed).
+ALTER ROLE ops_dashboard_ro LOGIN PASSWORD :'ro_pw';
 
 GRANT CONNECT ON DATABASE staging TO ops_dashboard_ro;
 GRANT USAGE   ON SCHEMA   util     TO ops_dashboard_ro;
