@@ -35,6 +35,15 @@ test("a failed last refresh adds an ERROR event surfaced in warn_error_logs", ()
   assert.ok(row.verbose_log.includes(row.warn_error_logs[0]));
 });
 
+test("lastError is collapsed to one line and capped in length", () => {
+  const huge = "line one\nline two   with   spaces\n" + "x".repeat(500);
+  const row = buildHeartbeat({ ...healthyHealth, lastError: huge });
+  const msg = row.warn_error_logs[0].err_msg;
+  assert.ok(!msg.includes("\n"), "should be single-line");
+  assert.ok(msg.length <= 320, `should be capped, got ${msg.length}`);
+  assert.ok(msg.endsWith("…(truncated)"));
+});
+
 test("health metrics land in a DETAILS event; missing fields default to null", () => {
   const row = buildHeartbeat({});
   const details = row.verbose_log.find((e) => e.tag === "DETAILS");

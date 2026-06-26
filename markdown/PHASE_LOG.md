@@ -20,7 +20,7 @@ Prompt:
 `prompts/prompt_7_self_monitoring.txt`
 
 Git Commit:
-Pending
+baf398d (impl); review fixes follow in a subsequent commit
 
 ## Goals
 
@@ -102,6 +102,24 @@ docker compose up -d                                       # recreate (.env chan
 - 32/32 unit tests. Positive + both negative DB tests pass.
 - Live: boot logs "self-logging on"; heartbeat writes cleanly (0 failures post-fix);
   grid shows 24 jobs incl. ops-dashboard/heartbeat = SUCCESS, not stale, coverage 24/24.
+
+## Review Notes
+
+Source: external (Codex) on `notes/review_handoff_phase_7.md`. Boundary checks passed
+independently (rw write ok; direct INSERT/SELECT denied; ro cannot execute; owner
+NOLOGIN; no elevated attributes/memberships). Accepted fixes (follow-up commit):
+
+- (medium) db/setup-writer-role.sql was additive and didn't enforce least privilege on
+  rerun/drift. Now forces role attributes (ALTER ROLE ... NOLOGIN/NOSUPERUSER/
+  NOCREATEDB/NOCREATEROLE/NOREPLICATION/NOBYPASSRLS) and revokes-before-grants the
+  minimal set, plus a verification block in comments. Re-ran live: idempotent; owner
+  canlogin=f, rw login-only, util grant = only ops_writer_owner/INSERT.
+- (low) lastError was persisted verbatim into warn_error_logs / the error feed. Added
+  summarizeError() (single-line, capped 300 chars); full detail stays in container
+  logs. New test.
+- (nit) Recorded the Phase 7 commit SHA (baf398d) instead of "Pending".
+
+Tests 33/33.
 
 ## Problems Encountered
 

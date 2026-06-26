@@ -32,9 +32,13 @@ CREATE SCHEMA IF NOT EXISTS ops;
 SELECT 'CREATE ROLE ops_writer_owner NOLOGIN'
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_writer_owner')
 \gexec
-GRANT USAGE  ON SCHEMA util       TO ops_writer_owner;
-GRANT INSERT ON util.app_run_logs TO ops_writer_owner;  -- on the parent; covers partitions
-GRANT USAGE  ON SCHEMA ops        TO ops_writer_owner;
+-- Force the safe attribute set even if the role pre-existed or drifted.
+ALTER ROLE ops_writer_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+-- Minimal object privileges: INSERT on the parent only (strip any drift first).
+REVOKE ALL ON util.app_run_logs FROM ops_writer_owner;
+GRANT  USAGE  ON SCHEMA util       TO ops_writer_owner;
+GRANT  INSERT ON util.app_run_logs TO ops_writer_owner;  -- on the parent; covers partitions
+GRANT  USAGE  ON SCHEMA ops        TO ops_writer_owner;
 
 -- 3. The only write path. Hard-codes app_name; parameterized; fixed search_path so a
 --    SECURITY DEFINER function can't be hijacked via search_path.
@@ -58,10 +62,26 @@ REVOKE ALL ON FUNCTION ops.log_ops_dashboard_run(uuid, json, json) FROM PUBLIC;
 SELECT format('CREATE ROLE ops_dashboard_rw LOGIN PASSWORD %L', :'rw_pw')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_dashboard_rw')
 \gexec
-ALTER ROLE ops_dashboard_rw LOGIN PASSWORD :'rw_pw';
-GRANT CONNECT ON DATABASE staging TO ops_dashboard_rw;
-GRANT USAGE   ON SCHEMA ops       TO ops_dashboard_rw;
-GRANT EXECUTE ON FUNCTION ops.log_ops_dashboard_run(uuid, json, json) TO ops_dashboard_rw;
+-- Force the safe attribute set (keep LOGIN; nothing else) even on rerun/drift.
+ALTER ROLE ops_dashboard_rw LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'rw_pw';
+-- Strip any drifted privileges, then grant EXACTLY the minimal set. The role needs
+-- no access to util at all -- the SECURITY DEFINER function reaches util as its owner.
+REVOKE ALL ON ALL TABLES    IN SCHEMA util FROM ops_dashboard_rw;
+REVOKE ALL ON SCHEMA util                  FROM ops_dashboard_rw;
+REVOKE ALL ON ALL TABLES    IN SCHEMA ops  FROM ops_dashboard_rw;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ops  FROM ops_dashboard_rw;
+REVOKE ALL ON SCHEMA ops                   FROM ops_dashboard_rw;
+GRANT  CONNECT ON DATABASE staging TO ops_dashboard_rw;
+GRANT  USAGE   ON SCHEMA ops       TO ops_dashboard_rw;
+GRANT  EXECUTE ON FUNCTION ops.log_ops_dashboard_run(uuid, json, json) TO ops_dashboard_rw;
 
--- Sanity (expected): as ops_dashboard_rw, SELECT ops.log_ops_dashboard_run(...) works
--- and writes an 'ops-dashboard' row; a direct INSERT INTO util.app_run_logs is DENIED.
+-- Verify the final state (run as superuser):
+--   SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
+--   FROM pg_roles WHERE rolname IN ('ops_writer_owner','ops_dashboard_rw');
+--     -> owner canlogin=f; rw canlogin=t; all of super/createdb/createrole/replication/bypassrls = f
+--   SELECT grantee, privilege_type FROM information_schema.role_table_grants
+--   WHERE table_schema='util' AND table_name='app_run_logs'
+--     AND grantee IN ('ops_writer_owner','ops_dashboard_rw');
+--     -> only ops_writer_owner / INSERT (ops_dashboard_rw absent)
+-- Behavior: as ops_dashboard_rw, SELECT ops.log_ops_dashboard_run(...) writes an
+-- 'ops-dashboard' row; direct INSERT/SELECT on util.app_run_logs is DENIED.
