@@ -17,18 +17,18 @@ function buildSsl() {
     return { rejectUnauthorized: false };
   }
 
-  // verify-ca / verify-full
+  // verify-ca / verify-full: fail closed. If the operator asked for CA
+  // verification, never silently downgrade to encrypted-but-unverified TLS --
+  // a missing/unreadable CA is a hard configuration error.
   const caPath = process.env.PG_SSL_PATH;
-  if (caPath) {
-    const resolved = path.isAbsolute(caPath) ? caPath : path.resolve(process.cwd(), caPath);
-    if (fs.existsSync(resolved)) {
-      return { ca: fs.readFileSync(resolved, "utf8"), rejectUnauthorized: true };
-    }
-    console.warn(`[pg] PG_SSL_PATH not found at ${resolved}; falling back to 'require'.`);
-    return { rejectUnauthorized: false };
+  if (!caPath) {
+    throw new Error(`[pg] PG_SSLMODE=${mode} requires PG_SSL_PATH to be set.`);
   }
-  console.warn("[pg] PG_SSLMODE=verify-* but PG_SSL_PATH not set; falling back to 'require'.");
-  return { rejectUnauthorized: false };
+  const resolved = path.isAbsolute(caPath) ? caPath : path.resolve(process.cwd(), caPath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`[pg] PG_SSLMODE=${mode} but CA not found at ${resolved}.`);
+  }
+  return { ca: fs.readFileSync(resolved, "utf8"), rejectUnauthorized: true };
 }
 
 const config = {

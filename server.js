@@ -13,6 +13,10 @@ const GRID_LOOKBACK_DAYS = Number(process.env.GRID_LOOKBACK_DAYS || 7);
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 
+// Version-agnostic RFC-4122 uuid shape; rejects anything that would make the
+// run_id cast fail in Postgres.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // The job-grid query detoasts ~150 MB of verbose_log JSON over the lookback
 // window (~17s) -- far too slow for the request path. Since the underlying data
 // only changes every ~15 min, we run it on a background interval and serve the
@@ -95,10 +99,21 @@ function buildApp() {
     }
   });
 
-  // Drill-down: full event timeline for one run.
+  // Drill-down: full event timeline for one run. Validate the id before it
+  // reaches Postgres (a non-uuid would raise a cast error -> 500) and accept an
+  // optional `inserted_at` hint to prune the partition scan -- the grid row
+  // carries it, so drill-down links pass it through.
   app.get("/api/runs/:run_id", async (req, res, next) => {
+    const runId = req.params.run_id;
+    if (!UUID_RE.test(runId)) {
+      return res.status(400).json({ error: "invalid run_id (expected a uuid)" });
+    }
+    const hint = req.query.inserted_at;
+    if (hint != null && Number.isNaN(Date.parse(hint))) {
+      return res.status(400).json({ error: "invalid inserted_at (expected an ISO timestamp)" });
+    }
     try {
-      const row = await queries.runById(req.params.run_id);
+      const row = await queries.runById(runId, hint || null);
       if (!row) return res.status(404).json({ error: "run not found" });
       const { startedAt, endedAt, durationMs } = runs.timing(row.verbose_log);
       res.json({
@@ -116,10 +131,12 @@ function buildApp() {
     }
   });
 
+  // Log details server-side; return a generic message so DB syntax/cast/
+  // connectivity internals aren't disclosed to clients.
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
     console.error("[ops-dashboard] request error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "internal server error" });
   });
 
   return app;

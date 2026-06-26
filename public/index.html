@@ -84,7 +84,13 @@
         tr.appendChild(cell(fmtAge(j.ageMs), "num"));
         tr.appendChild(cell(fmtDur(j.durationMs), "num"));
         tr.appendChild(cell(j.issueCount, "num"));
-        tr.appendChild(cell(j.runId));
+        const idCell = document.createElement("td");
+        const link = document.createElement("a");
+        // Pass inserted_at so the drill-down query prunes to one partition.
+        link.href = `/api/runs/${j.runId}?inserted_at=${encodeURIComponent(j.lastRun)}`;
+        link.textContent = j.runId;
+        idCell.appendChild(link);
+        tr.appendChild(idCell);
         tb.appendChild(tr);
       }
     }

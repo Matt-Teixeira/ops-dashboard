@@ -6,7 +6,8 @@
   "main": "index.js",
   "scripts": {
     "serve": "node index.js serve",
-    "dev": "node --watch index.js serve"
+    "dev": "node --watch index.js serve",
+    "test": "node --test"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

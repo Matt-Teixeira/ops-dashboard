@@ -10,6 +10,14 @@
 
 const db = require("./pg-pool");
 
+// Guard a json `dt` text value before casting: only cast strings that look like
+// an ISO-8601 UTC timestamp, otherwise NULL. A single malformed `dt` must not
+// raise a cast error that fails the whole grid refresh. (Note the doubled
+// backslashes -- this is a JS template literal, so \\d reaches SQL as \d.)
+const SAFE_TS = (expr) =>
+  `CASE WHEN (${expr}) ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$' ` +
+  `THEN (${expr})::timestamptz END`;
+
 // One row per (app_name, job): the most recent run within the lookback window.
 const JOBS_LATEST_SQL = `
 WITH recent AS (
@@ -18,8 +26,8 @@ WITH recent AS (
     run_id,
     inserted_at,
     COALESCE(NULLIF(verbose_log->0->'note'->'argv'->>2, ''), '(default)') AS job,
-    (verbose_log->0->>'dt')::timestamptz                                  AS started_at,
-    (verbose_log->-1->>'dt')::timestamptz                                 AS ended_at,
+    ${SAFE_TS("verbose_log->0->>'dt'")}                                   AS started_at,
+    ${SAFE_TS("verbose_log->-1->>'dt'")}                                  AS ended_at,
     COALESCE(warn_error_logs, '[]'::json)                                 AS warn_error_logs
   FROM util.app_run_logs
   WHERE inserted_at > now() - ($1::int * interval '1 day')
@@ -36,7 +44,10 @@ SELECT
   inserted_at,
   started_at,
   ended_at,
-  round(EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint AS duration_ms,
+  -- Clamp out-of-order spans to NULL instead of a misleading negative duration.
+  CASE WHEN started_at IS NOT NULL AND ended_at IS NOT NULL AND ended_at >= started_at
+       THEN round(EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint
+  END AS duration_ms,
   CASE
     WHEN EXISTS (SELECT 1 FROM json_array_elements(warn_error_logs) e WHERE e->>'type' = 'ERROR') THEN 'ERROR'
     WHEN EXISTS (SELECT 1 FROM json_array_elements(warn_error_logs) e WHERE e->>'type' = 'WARN')  THEN 'WARN'
@@ -66,11 +77,23 @@ LIMIT $2;
 `;
 
 // Full event timeline for one run (drill-down). run_id is not indexed and the
-// table is partitioned, so we narrow by inserted_at when a hint is supplied.
+// table is partitioned. Without a hint this scans every partition, so callers
+// should pass the run's inserted_at (the grid row carries it) to prune to one
+// monthly partition via the hinted variant below.
 const RUN_BY_ID_SQL = `
 SELECT app_name, run_id, inserted_at, verbose_log
 FROM util.app_run_logs
 WHERE run_id = $1
+ORDER BY inserted_at DESC
+LIMIT 1;
+`;
+
+const RUN_BY_ID_HINTED_SQL = `
+SELECT app_name, run_id, inserted_at, verbose_log
+FROM util.app_run_logs
+WHERE run_id = $1
+  AND inserted_at >= $2::timestamptz - interval '1 hour'
+  AND inserted_at <  $2::timestamptz + interval '1 hour'
 ORDER BY inserted_at DESC
 LIMIT 1;
 `;
@@ -83,7 +106,10 @@ function recentErrors(lookbackDays = 2, limit = 100) {
   return db.any(ERRORS_SQL, [lookbackDays, limit]);
 }
 
-function runById(runId) {
+function runById(runId, insertedAtHint) {
+  if (insertedAtHint) {
+    return db.oneOrNone(RUN_BY_ID_HINTED_SQL, [runId, insertedAtHint]);
+  }
   return db.oneOrNone(RUN_BY_ID_SQL, [runId]);
 }
 
