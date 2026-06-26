@@ -8,6 +8,111 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 4 — Incremental Run Cache (in-process)
+
+Date:
+2026-06-26
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_4_summary_table.txt`
+
+Git Commit:
+Pending
+
+## Goals
+
+- Retire the heavy background grid query by parsing each app_run_logs row at most
+  once per process lifetime (Option B: in-process incremental cache, no DB writes).
+- Show last-run-per-(app,job) so dormant jobs stay visible (stale) instead of
+  vanishing under a lookback window.
+
+## Built
+
+- `lib/run-cache.js`: DB-free cache (Map keyed by app+job). merge (idempotent,
+  keep max inserted_at per key), evict (retention), sinceBound (watermark-overlap,
+  floor-clamped), watermark advance. Unit-testable with injected rows.
+- `db/queries.js`: `JOBS_LATEST_SQL` now bounded by `inserted_at >= $1::timestamptz`;
+  `jobsLatestSince(sinceIso)` replaces `jobsLatest(lookbackDays)`.
+- `server.js`: removed the Phase 2 full-rescan snapshot. One `refreshOnce` driver:
+  bootstrap when cache not ready (sinceBound = retention floor), else a tick
+  (sinceBound = watermark - overlap). Serves from the cache; 503 until ready.
+- `test/run-cache.test.js`: 8 tests (bootstrap, idempotent re-merge, newer/older,
+  eviction, watermark monotonicity, empty merge, sinceBound, ready).
+- Env: added `SUMMARY_RETENTION_DAYS` (30) + `SUMMARY_OVERLAP_MS` (300000); removed
+  `GRID_LOOKBACK_DAYS`. Updated `.env.example` / `markdown/ENVIRONMENT.md`.
+
+## Schema Facts Confirmed (live DB)
+
+- 30-day bootstrap = 23 jobs in ~15s (raw SQL) / ~31s live incl. connect, behind
+  the warming 503; tick window (since watermark-overlap) = 9–43ms, prunes to one
+  partition. Both windows' newest inserted_at is identical, so the watermark stays
+  correct after every merge.
+- `hhm_rpp_siemens` (SIEMENS_CT, SIEMENS_MRI), idle ~16.9 days, is invisible at 7d
+  but present and STALE at 30d — the blind spot the lookback created.
+- Insert-lag (inserted_at vs run-end dt): p95 ~0.29s, max ~3.6s -> the 5-min
+  overlap is ~80x margin. No doc corrections needed; schema matches the contract.
+
+## Important Decisions
+
+### Two review adjustments over the plan
+
+Decision: (1) listen first; one interval drives bootstrap-if-not-ready (retry on
+failure) else tick — never block listen on bootstrap. (2) Removed
+`GRID_LOOKBACK_DAYS` rather than leaving it inert.
+Reason: keep `/healthz` and the 503-warming path live during the ~31s bootstrap,
+and make a boot-time DB failure self-heal; avoid a misleading dead env knob.
+Tradeoff: a cold start re-bootstraps the retention window (~31s) on every restart
+(single instance, behind warming — acceptable).
+
+### Keep the `lookbackDays` response field
+
+Decision: keep the key, populate with the retention value (30).
+Reason: eviction means a job shows iff its last run is within retention, so
+"last 30d" is accurate; preserves the grid response shape (no UI change).
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none added — still `ops_dashboard_ro`,
+  SELECT only, no write surface (Option A deferred).
+- Query / partition-pruning impact: grid query now `inserted_at >= $1`; ticks prune
+  to one partition.
+- Performance impact: request path 2.7ms (was ~17–28s on the old snapshot's cold
+  path); heavy work is one bootstrap + cheap ticks, off the request path.
+- API compatibility impact: `/api/jobs/latest` response shape unchanged; `/api/errors`
+  and `/api/runs/:run_id` untouched.
+
+## Validation
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 19 pass (8 new + 11)
+docker compose up -d                                       # recreate (.env changed)
+```
+
+- node --test: 19 pass.
+- Live smoke: healthz 200 in 33ms during bootstrap (listen-first); grid 503 while
+  warming, then 200 in 2.7ms; count 23, lookbackDays 30, asOf set; siemens shows
+  STALE at 16.9d; observed `grid bootstrap: 23 rows ... 31137ms` then
+  `grid tick: 1 rows -> 23 jobs ... 43ms`.
+
+## Review Notes
+
+- Pre-implementation plan review (this session) raised the two adjustments above;
+  both applied. A post-implementation handoff for an external reviewer is the next
+  step (`notes/review_handoff_phase_4.md`).
+
+## Commit Readiness
+
+- Read-only / least-privilege rules hold: yes.
+- Time-windowed queries partition-pruned: yes.
+- Schema assumptions confirmed live: yes.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
 # Phase 0 — Workflow Scaffold
 
 Date:

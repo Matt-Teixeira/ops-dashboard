@@ -18,7 +18,11 @@ const SAFE_TS = (expr) =>
   `CASE WHEN (${expr}) ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$' ` +
   `THEN (${expr})::timestamptz END`;
 
-// One row per (app_name, job): the most recent run within the lookback window.
+// One row per (app_name, job): the most recent run with inserted_at >= $1.
+// The cache (lib/run-cache.js) calls this for both the bootstrap scan (since =
+// now - retention) and each incremental tick (since = watermark - overlap). The
+// DISTINCT ON survivors always include the row with the global max inserted_at in
+// the window, so the cache's watermark stays correct after every merge.
 const JOBS_LATEST_SQL = `
 WITH recent AS (
   SELECT
@@ -30,7 +34,7 @@ WITH recent AS (
     ${SAFE_TS("verbose_log->-1->>'dt'")}                                  AS ended_at,
     COALESCE(warn_error_logs, '[]'::json)                                 AS warn_error_logs
   FROM util.app_run_logs
-  WHERE inserted_at > now() - ($1::int * interval '1 day')
+  WHERE inserted_at >= $1::timestamptz
 ),
 latest AS (
   SELECT DISTINCT ON (app_name, job) *
@@ -98,8 +102,8 @@ ORDER BY inserted_at DESC
 LIMIT 1;
 `;
 
-function jobsLatest(lookbackDays = 7) {
-  return db.any(JOBS_LATEST_SQL, [lookbackDays]);
+function jobsLatestSince(sinceIso) {
+  return db.any(JOBS_LATEST_SQL, [sinceIso]);
 }
 
 function recentErrors(lookbackDays = 2, limit = 100) {
@@ -117,4 +121,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatest, recentErrors, runById, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, ping };

@@ -18,9 +18,10 @@ contract with safe placeholders.
 | `PGDATABASE` | DB name | `staging` (holds `util.app_run_logs`). Fallback: `PG_DB` |
 | `PG_SSLMODE` | TLS mode | `disable` \| `require` \| `verify-ca` \| `verify-full` |
 | `PG_SSL_PATH` | CA cert path | `/opt/resources/ssl/pg_ssl.crt`; required for `verify-*` |
-| `GRID_LOOKBACK_DAYS` | Job-grid window | default `7`; bounds the partition-pruned scan |
-| `ERRORS_LOOKBACK_DAYS` | Error-feed window | default `2` |
-| `GRID_REFRESH_MS` | Background snapshot interval | default `120000` (2 min) |
+| `ERRORS_LOOKBACK_DAYS` | Error-feed window (days) | default `2`; bounds the partition-pruned scan |
+| `SUMMARY_RETENTION_DAYS` | Job-grid retention window (days) | default `30`; a job shows iff its last run is within it (dormant jobs stay visible as stale, then age out). Also the bootstrap scan window. |
+| `SUMMARY_OVERLAP_MS` | Grid tick re-scan overlap | default `300000` (5 min); each tick scans back this far behind the watermark to absorb insert-lag skew |
+| `GRID_REFRESH_MS` | Grid cache tick interval | default `120000` (2 min); each tick is cheap (only rows since the watermark) |
 
 ## Rules
 
