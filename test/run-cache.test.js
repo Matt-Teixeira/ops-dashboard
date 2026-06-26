@@ -78,6 +78,21 @@ test("sinceBound: retention floor before first merge, watermark-overlap after, f
   assert.equal(c2.sinceBound(NOW).toISOString(), daysAgo(1));
 });
 
+test("a full re-scan recovers a late/backfilled row the overlap window missed", () => {
+  // Simulates the reconcile path: an active job advances the watermark, then a
+  // backfilled row for a dormant job arrives with an inserted_at older than
+  // (watermark - overlap). A tick (bounded by sinceBound) would miss it, but a
+  // full retention re-scan feeds it to merge, which inserts it (key was absent).
+  const c = createRunCache({ retentionDays: 30, overlapMs: 300000 });
+  c.merge([row("ge", "GE_CT", "2026-06-25T11:00:00.000Z")], NOW); // watermark 11:00
+  const since = c.sinceBound(NOW); // 10:55 — a tick would not see a 10:40 row
+  assert.ok(new Date("2026-06-25T10:40:00.000Z") < since);
+  // full re-scan window includes the backfilled row -> merge inserts it
+  c.merge([row("si", "SIEMENS_CT", "2026-06-25T10:40:00.000Z")], NOW);
+  const keys = c.values().map((r) => `${r.app_name}/${r.job}`);
+  assert.ok(keys.includes("si/SIEMENS_CT"));
+});
+
 test("ready flips only when markReady is called", () => {
   const c = createRunCache({ retentionDays: 30 });
   assert.equal(c.ready, false);

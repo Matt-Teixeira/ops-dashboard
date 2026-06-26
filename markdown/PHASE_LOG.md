@@ -20,7 +20,7 @@ Prompt:
 `prompts/prompt_4_summary_table.txt`
 
 Git Commit:
-Pending
+8643f3d (impl); review fixes follow in a subsequent commit
 
 ## Goals
 
@@ -99,9 +99,23 @@ docker compose up -d                                       # recreate (.env chan
 
 ## Review Notes
 
-- Pre-implementation plan review (this session) raised the two adjustments above;
-  both applied. A post-implementation handoff for an external reviewer is the next
-  step (`notes/review_handoff_phase_4.md`).
+Pre-implementation: plan review raised the two adjustments above; both applied.
+
+Post-implementation: external (Codex) review, run from the phase log + commits.
+Accepted fixes (subsequent commit):
+
+- (medium) The overlap ticks absorb commit-lag skew but not a true backfill — a
+  row committed now with inserted_at older than (watermark - overlap) would be
+  missed until restart. Added a periodic full-retention reconciliation
+  (`SUMMARY_RECONCILE_MS`, default 6 h): every interval a tick instead does a full
+  retention re-scan; merge is idempotent so it never duplicates. Covered by a new
+  cache test.
+- (low) `KEY_SEP` was a literal NUL byte -> git treated `lib/run-cache.js` as
+  binary. Rewrote as the `"\x00"` escape (same NUL at runtime, ASCII source).
+- (nit) Recorded this entry's commit SHA instead of "Pending".
+
+No issues found in the bootstrap-retry guard or eviction; 19/19 tests passed at
+review time (20/20 after the reconciliation test).
 
 ## Commit Readiness
 

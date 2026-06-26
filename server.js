@@ -14,6 +14,8 @@ const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
+const SUMMARY_RECONCILE_MS = Number(process.env.SUMMARY_RECONCILE_MS || 6 * 60 * 60 * 1000);
+const RETENTION_MS = SUMMARY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 // Version-agnostic RFC-4122 uuid shape; rejects anything that would make the
 // run_id cast fail in Postgres.
@@ -29,22 +31,30 @@ const cache = createRunCache({ retentionDays: SUMMARY_RETENTION_DAYS, overlapMs:
 let asOf = null;
 let lastError = null;
 let refreshing = false;
+let lastReconcileAt = 0; // epoch ms of the last full-retention scan
 
-// One driver for both phases: when the cache isn't ready yet this is the
-// bootstrap (sinceBound returns the retention floor); once ready it's an
-// incremental tick (sinceBound returns watermark - overlap). The watermark only
-// advances inside a successful merge, so a failed refresh leaves no gap and the
-// next interval simply retries (re-bootstrapping if the first attempt failed).
+// One driver for three phases:
+//   - bootstrap: cache not ready yet -> scan the full retention window.
+//   - reconcile: ready, but >= SUMMARY_RECONCILE_MS since the last full scan ->
+//     scan the full retention window again. The overlap ticks only catch rows
+//     near the watermark, so a late/backfilled insert older than
+//     (watermark - overlap) would be missed until a full scan. This periodic
+//     reconciliation closes that gap; merge is idempotent, so it never duplicates.
+//   - tick: ready and recently reconciled -> cheap scan since watermark - overlap.
+// The watermark only advances inside a successful merge, so a failed refresh
+// leaves no gap and the next interval simply retries.
 async function refreshOnce(now = new Date()) {
   if (refreshing) return;
   refreshing = true;
   const started = Date.now();
-  const phase = cache.ready ? "tick" : "bootstrap";
+  const full = !cache.ready || now.getTime() - lastReconcileAt >= SUMMARY_RECONCILE_MS;
+  const phase = !cache.ready ? "bootstrap" : full ? "reconcile" : "tick";
   try {
-    const since = cache.sinceBound(now);
+    const since = full ? new Date(now.getTime() - RETENTION_MS) : cache.sinceBound(now);
     const rows = await queries.jobsLatestSince(since.toISOString());
     cache.merge(rows, now);
     cache.markReady();
+    if (full) lastReconcileAt = now.getTime();
     asOf = new Date().toISOString();
     lastError = null;
     console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms`);

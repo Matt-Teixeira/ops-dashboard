@@ -21,6 +21,7 @@ contract with safe placeholders.
 | `ERRORS_LOOKBACK_DAYS` | Error-feed window (days) | default `2`; bounds the partition-pruned scan |
 | `SUMMARY_RETENTION_DAYS` | Job-grid retention window (days) | default `30`; a job shows iff its last run is within it (dormant jobs stay visible as stale, then age out). Also the bootstrap scan window. |
 | `SUMMARY_OVERLAP_MS` | Grid tick re-scan overlap | default `300000` (5 min); each tick scans back this far behind the watermark to absorb insert-lag skew |
+| `SUMMARY_RECONCILE_MS` | Full re-scan interval | default `21600000` (6 h); every this long a tick does a full retention re-scan, catching any late/backfilled insert older than the overlap |
 | `GRID_REFRESH_MS` | Grid cache tick interval | default `120000` (2 min); each tick is cheap (only rows since the watermark) |
 
 ## Rules
