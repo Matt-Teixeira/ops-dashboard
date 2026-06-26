@@ -1,50 +1,81 @@
 Phase 6 - Real Schedule Cadences
 
 Goal:
-Make staleness detection trustworthy by replacing the placeholder cadences in
-config/schedules.js with the real expected schedule per (app, job), sourced from
-each app's actual cron/compose configuration.
+Make the STALE badge trustworthy: confirm and complete config/schedules.js against
+the real cron, fill in the jobs the grid shows but the config omits, add provenance
+for every entry, and surface coverage (which grid jobs have no configured cadence).
 
-Background:
-config/schedules.js currently holds guessed everyMin values; lib/staleness.js
-returns null (unknown) for jobs not in the map and does not parse cron strings.
-A STALE badge is only meaningful once cadences are real.
+Background (verified this session - do not re-discover from scratch):
+- The real cron IS documented on the host, in the apps' docs (the host/systemd
+  crontab is not readable from the dashboard env, so use these files as the source
+  of truth):
+    * data_acquisition/docs/cron-jobs.txt  - the master cron; covers data_acquisition,
+      the hhm_rpp_* parsers, and (for later) monday / reports / acumatica / part-source.
+    * hhm_rpp_philips/docs/cron.txt         - the local Philips schedule.
+- EVERY job currently in the grid runs every 30 minutes. Cron shows 00,30 / 15,45 /
+  18,48 / 19,49 * * * *, and the observed median inter-run gap in app_run_logs is
+  exactly 30.0 min for all hhm_rpp_ge and hhm_rpp_philips jobs. So `everyMin: 30` is
+  CORRECT (not a placeholder) for those - this phase confirms it and adds provenance.
+- data_acquisition/(default) is the aggregate of many staggered sub-jobs; observed
+  median gap is ~0.4 min (it runs almost constantly).
+- Staleness is already wired end to end (Phases 4-5): lib/staleness.evaluate ->
+  the grid response `stale` field (true/false/null) -> the UI badge, and the grid
+  now shows dormant jobs (last-run-per-job within retention). Phase 6 feeds it real
+  numbers and surfaces coverage; it does NOT rebuild the mechanism.
 
 Scope:
-- Gather the real cadence for each in-scope (app, job) from the source of truth
-  (each app's crontab / docker invocation / docs). Record where each came from.
-- Support cron-string cadences in lib/staleness.js (currently only everyMin is
-  handled; cron entries return null). Add a small, well-tested cron "is it overdue"
-  evaluation, or document why everyMin is sufficient.
-- Keep unknown jobs reporting stale=null (unknown, not green) and surface coverage:
-  log or display which (app, job) pairs have no configured cadence so gaps are
-  visible rather than silently passing.
-- Decide how to model data_acquisition (one (default) bucket, fans out per
-  system_id) - document whether per-system staleness is in or out of scope.
+- Reconcile config/schedules.js with the cron files. Add the Philips variants the
+  grid shows but the config omits today (PHILIPS_MRI_MONITOR_1..5, _RMMU_1..5,
+  _LOG_1..5 - all every 30 min). Give every entry a provenance comment citing its
+  source (cron file line, or "observed median gap, app_run_logs, <date>").
+- Cross-check each everyMin against the observed median inter-run gap per (app, job)
+  in app_run_logs (run notes/schedule-cadence-probe.sql; ge/philips = 30.0 min).
+- Fix entries that do not match reality: e.g. SIEMENS_CV is not in the cron and has
+  ~no runs - mark it not-scheduled/unknown rather than asserting 30 min.
+- Surface coverage: report which grid (app, job) pairs have NO configured cadence
+  (they report stale=null today). Add a small count to the grid response (additive,
+  don't break shape) and/or a one-line boot log. Unknown must stay null, never green.
+- Decide data_acquisition modeling: (default) cadence should catch a full-pipeline
+  STALL (it normally runs ~every 30s). Pick a budget that flags a real stop without
+  noise (e.g. a few minutes + grace) and document it. Per-system_id staleness is OUT
+  of scope - the grid/cache is keyed by (app, job) and data_acquisition is one bucket.
 
 Non-goals:
+- DEFER cron-string parsing. Everything in the grid is interval-scheduled, so
+  everyMin is sufficient and timezone-independent; do not build a cron evaluator now.
+  Record the known wall-clock schedules (e.g. monday equipment_rtt `25 7 * * *`,
+  acumatica `20 7 * * *`, part-source inv_feed_sync `0 6 * * *`) as COMMENTED future
+  entries in config/schedules.js, to be activated with a cron evaluator only when
+  those apps start logging to the DB and appear in the grid.
 - No alerting/paging (staleness is shown in the grid only).
-- No DB schema changes.
-- Do not invent cadences - if a real value cannot be found, mark it unknown.
+- No DB schema changes; no writes.
+- Do not invent cadences - if a real value can't be sourced, mark it unknown.
 
 Expected files / layers:
-- config/schedules.js (real values + provenance comments), lib/staleness.js (cron
-  support + coverage reporting), tests, possibly a small "coverage" surface in the
-  grid response/UI.
+- config/schedules.js (confirmed values + provenance comments + commented future
+  wall-clock entries), lib/staleness.js (only if coverage reporting needs a helper -
+  the everyMin path already works), server.js (optional coverage count in the grid
+  response), tests, maybe a tiny UI surface for the unknown-cadence count.
 
 Expected validation:
-- node --test for staleness: within-budget, overdue, unknown, and cron cases.
-- Live smoke: confirm STALE badges match reality for a few known jobs.
+- node --test for staleness: within-budget, overdue, unknown(null), and the coverage
+  count. Keep it pure (inject schedule + lastRun).
+- Live smoke: every grid job except the deliberately-unknown ones resolves to a real
+  stale=true/false; confirm the dormant siemens jobs read correctly and that the
+  unknown-cadence count matches the jobs left unconfigured.
 
 Read-only / least-privilege constraints:
-- Config + logic only; no DB writes.
+- Config + logic only; no DB writes, still ops_dashboard_ro.
 
 Schema assumptions to confirm live:
-- Cross-check configured cadence against observed run frequency in app_run_logs
-  (the data is the reality check on the cron docs).
+- Re-run the observed-gap query (median inter-run gap per app/job) and confirm it
+  still matches the configured everyMin before trusting each value.
+- Confirm which (app, job) pairs are actually present in the grid now, so coverage
+  is measured against the real set (it grows as more apps start logging).
 
 Review questions:
-- Is every configured cadence traceable to a real source (commented)?
-- Do unknown jobs stay null, never falsely green?
-- Is cron evaluation correct around grace windows and timezones (logs are UTC)?
-- Is the data_acquisition modeling decision explicit?
+- Is every configured cadence traceable to a cron line or a dated observation?
+- Do unknown jobs stay null (never falsely green), and is the unknown set visible?
+- Is the data_acquisition (default) budget justified and documented?
+- Are the deferred wall-clock schedules recorded (commented) so they are not lost?
+- Does the config still match the live cron/observed cadence (no silent drift)?
