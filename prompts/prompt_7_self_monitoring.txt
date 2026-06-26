@@ -1,0 +1,52 @@
+Phase 7 - Self-Monitoring
+
+Goal:
+Let ops-dashboard log its own runs into util.app_run_logs under
+app_name = "ops-dashboard", so the dashboard appears in its own job grid and any
+self-failures are visible the same way pipeline failures are.
+
+Background:
+This is the one sanctioned exception to "do not write pipeline tables": the
+read-only rule permits writing rows whose app_name is exactly "ops-dashboard".
+The suite already has a shared logger pattern (addLogEvent / writeLogEvents /
+dbInsertLogEvents / makeAppRunLog) to reuse.
+
+Scope:
+- Reuse the suite's logger pattern to emit a run log for batch invocations (e.g.
+  the Phase 4 summary refresh job, a future digest job). Decide whether the
+  long-running serve process logs periodic heartbeats or only batch jobs log.
+- Writing requires more than the read-only role. Introduce a narrowly-scoped path:
+  the writer may INSERT only rows with app_name = "ops-dashboard" into
+  util.app_run_logs and nothing else. Enforce at the credential/role level, not
+  just in code (e.g. a dedicated writer role + a row-level or trigger guard, or a
+  separate insert function). Document the exact grant.
+- Confirm the insert shape matches the ColumnSet the suite uses
+  (app_name, run_id, verbose_log, warn_error_logs); inserted_at defaults to now().
+
+Non-goals:
+- Do not write any row with app_name != "ops-dashboard".
+- Do not change the read path or the read-only role used for queries.
+- Do not log secrets into verbose_log.
+
+Expected files / layers:
+- utils/logger/ (reuse/port the suite pattern), the batch job(s), a writer DB
+  path/role, ENVIRONMENT.md (new vars/role), tests.
+
+Expected validation:
+- node --test for the log assembly.
+- Live: run a batch job, confirm exactly one ops-dashboard row appears, and confirm
+  the writer is denied writing any other app_name (negative test).
+
+Read-only / least-privilege constraints:
+- This is the ONLY sanctioned write, scoped to app_name = "ops-dashboard".
+- The query/read role stays read-only; the writer role is separate and minimal.
+
+Schema assumptions to confirm live:
+- The exact column set and types for an insert; that inserted_at defaults to now().
+- Whether a role/trigger can constrain inserts to a single app_name on this DB.
+
+Review questions:
+- Is it provably impossible for the writer to write another app's rows (role-level)?
+- Are secrets kept out of verbose_log?
+- Does the self-log show up correctly in the existing grid/error views?
+- Is the writer credential separate from the read credential?

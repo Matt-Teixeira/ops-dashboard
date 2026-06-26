@@ -1,0 +1,65 @@
+Phase 4 - Incremental Summary Table
+
+Goal:
+Replace the heavy background grid query with an incremental summary table so the
+job grid is computed from pre-parsed rows, not by re-detoasting ~150 MB of
+verbose_log JSON every refresh. Each app_run_logs row should be parsed at most
+once, ever.
+
+Background:
+The grid query parses status/job/duration from json over a 7-day window and takes
+~17-28s (data_acquisition alone is ~99 MB of blobs). Phase 2 moved it to a
+background snapshot so users aren't blocked, but the cost still grows with the
+table. This phase retires that cost.
+
+Scope:
+- Create a summary table in a schema this app owns (e.g. ops.run_summary) with one
+  row per run_id: app_name, job, run_id, inserted_at, status, duration_ms,
+  issue_count, started_at, ended_at.
+- Add an incremental refresh job that processes only NEW rows since a stored
+  inserted_at watermark (a registry job alongside serve, e.g.
+  `node index.js refresh_summary`), parsing each row once.
+- Repoint /api/jobs/latest to read DISTINCT ON (app_name, job) from the summary
+  table (millisecond query), keeping the same response shape.
+- Decide and document the refresh trigger: in-process interval vs. external cron
+  invocation of the batch job. Prefer the batch-job pattern the suite already uses,
+  with the in-process interval as a fallback.
+- Provide the table DDL and grants as a committed SQL file (db/), and grant the
+  read-only role SELECT on it (the refresh job may need a separate writer role
+  scoped to the ops schema only - decide and document).
+
+Non-goals:
+- Do not change /api/errors or /api/runs/:run_id behavior.
+- Do not write to any pipeline table; the summary table is ours (ops schema).
+- Do not change the public API response shape for the grid.
+- Do not add alerting.
+
+Expected files / layers:
+- db/ (new DDL + grants SQL), db/queries.js (new summary read + watermark queries),
+  a new jobs/ module for the refresh, index.js (register the job), server.js
+  (read from summary; the background snapshot may become a thin cache or be removed),
+  config/env or ENVIRONMENT.md (any new vars), tests.
+
+Expected validation:
+- node --test for the parse/watermark logic (pure where possible).
+- Live: run the refresh job once, confirm row counts match a direct query, then
+  EXPLAIN the new grid read to confirm it is a cheap indexed scan (no json detoast).
+- Smoke: grid endpoint returns the same shape and is fast; numbers match the old query.
+
+Read-only / least-privilege constraints:
+- The reader role stays read-only on util.app_run_logs.
+- The summary table is the ONLY thing this app writes, and only in its own schema.
+- The writer must never touch util.* or any pipeline table.
+
+Schema assumptions to confirm live (before coding):
+- Can this DB user create a schema/table we own? If not, what role/grant is needed?
+- Confirm the watermark approach handles late-arriving rows (inserted_at default
+  now() - are there out-of-order inserts? backfill?).
+- Re-confirm json field paths used for status/job/duration still hold.
+
+Review questions:
+- Is each row parsed exactly once, and is the watermark crash-safe (no gaps/dupes)?
+- Does the writer have the minimum privileges, scoped to the ops schema only?
+- Is the grid response shape unchanged for the frontend?
+- What happens on first run / empty summary table (cold start)?
+- Is the refresh trigger documented and consistent with suite conventions?

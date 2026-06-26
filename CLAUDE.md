@@ -4,15 +4,17 @@ Orientation for an AI assistant (or new contributor) picking this project up col
 
 ## What this project is
 
-`ops-dashboard` is a **new, not-yet-built** read-only web dashboard that gives
-centralized visibility into the cron-driven data-pipeline apps living under
-`/opt/apps`. Those apps ingest medical-imaging equipment telemetry (GE / Philips /
-Siemens modalities), sync with Acumatica ERP and Monday.com, and email reports.
-There is currently **no centralized monitoring** — that gap is the entire reason
-this app exists.
+`ops-dashboard` is a read-only web dashboard that gives centralized visibility
+into the cron-driven data-pipeline apps living under `/opt/apps`. Those apps
+ingest medical-imaging equipment telemetry (GE / Philips / Siemens modalities),
+sync with Acumatica ERP and Monday.com, and email reports. There was previously
+**no centralized monitoring** — that gap is the reason this app exists.
 
-This repo was seeded with context docs only. There is **no application code yet**.
-Your job is to help design and build it. Start by reading the `docs/` folder.
+A **v1 slice is built and deployed** (read-only Node/Express + pg-promise service
+over `util.app_run_logs`, running in Docker on `pg_net`): job grid, error feed,
+and run drill-down. Work now proceeds in small phases — see the development
+workflow below. Start by reading the `docs/` folder (domain context) and
+`markdown/FLOW.md` (how work gets done here).
 
 ## The single most important fact
 
@@ -53,8 +55,22 @@ is reconstructed from the apps' insert code, not from a DDL file.
 - Match the existing apps' style rather than introducing new conventions, unless there's a clear reason.
 - Before building querying logic, confirm the live `util.app_run_logs` schema (column types, whether `verbose_log` is `jsonb` or `text`, indexes, row volume/retention).
 
-## Good first steps for the next session
+## Development workflow (read before starting work)
 
-1. Confirm the live DB schema for `util.app_run_logs` (and check for any companion tables) — see open questions in `docs/proposed-architecture.md`.
-2. Decide the stack (see options in the architecture doc) and get sign-off.
-3. Scaffold: `package.json`, `db/pg-pool.js`, `docker-compose.yaml`, `.env.example`, minimal server + one endpoint (`GET /api/jobs/latest`).
+This project runs on a **measured, phase-based, prompt-driven workflow**. The v1
+slice is built and deployed; new work happens one small, reviewable phase at a
+time. The system lives at the repo root:
+
+- `markdown/FLOW.md` — the workflow loop and phase execution steps (**start here**)
+- `markdown/ARCHITECTURE_PRINCIPLES.md` — durable, non-negotiable rules
+- `markdown/PROMPTS.md` — the phase roadmap and status
+- `markdown/PHASE_LOG.md` — durable memory of what's been done and why
+- `markdown/REVIEW_CHECKLIST.md` — the quality gate before any commit
+- `markdown/ENVIRONMENT.md`, `markdown/DEPLOYMENT.md` — env rules + deploy runbook
+- `prompts/prompt_X_*.txt` — the structured prompt for each phase
+- `notes/` — review handoffs and findings
+
+Before any change: read `markdown/FLOW.md`, the relevant `docs/`, the current
+phase prompt, and recent `PHASE_LOG.md` entries. Confirm schema assumptions
+against the live DB before writing query logic. Next planned work is **Phase 4 —
+incremental summary table** (`prompts/prompt_4_summary_table.txt`).

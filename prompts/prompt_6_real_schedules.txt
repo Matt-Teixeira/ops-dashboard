@@ -1,0 +1,50 @@
+Phase 6 - Real Schedule Cadences
+
+Goal:
+Make staleness detection trustworthy by replacing the placeholder cadences in
+config/schedules.js with the real expected schedule per (app, job), sourced from
+each app's actual cron/compose configuration.
+
+Background:
+config/schedules.js currently holds guessed everyMin values; lib/staleness.js
+returns null (unknown) for jobs not in the map and does not parse cron strings.
+A STALE badge is only meaningful once cadences are real.
+
+Scope:
+- Gather the real cadence for each in-scope (app, job) from the source of truth
+  (each app's crontab / docker invocation / docs). Record where each came from.
+- Support cron-string cadences in lib/staleness.js (currently only everyMin is
+  handled; cron entries return null). Add a small, well-tested cron "is it overdue"
+  evaluation, or document why everyMin is sufficient.
+- Keep unknown jobs reporting stale=null (unknown, not green) and surface coverage:
+  log or display which (app, job) pairs have no configured cadence so gaps are
+  visible rather than silently passing.
+- Decide how to model data_acquisition (one (default) bucket, fans out per
+  system_id) - document whether per-system staleness is in or out of scope.
+
+Non-goals:
+- No alerting/paging (staleness is shown in the grid only).
+- No DB schema changes.
+- Do not invent cadences - if a real value cannot be found, mark it unknown.
+
+Expected files / layers:
+- config/schedules.js (real values + provenance comments), lib/staleness.js (cron
+  support + coverage reporting), tests, possibly a small "coverage" surface in the
+  grid response/UI.
+
+Expected validation:
+- node --test for staleness: within-budget, overdue, unknown, and cron cases.
+- Live smoke: confirm STALE badges match reality for a few known jobs.
+
+Read-only / least-privilege constraints:
+- Config + logic only; no DB writes.
+
+Schema assumptions to confirm live:
+- Cross-check configured cadence against observed run frequency in app_run_logs
+  (the data is the reality check on the cron docs).
+
+Review questions:
+- Is every configured cadence traceable to a real source (commented)?
+- Do unknown jobs stay null, never falsely green?
+- Is cron evaluation correct around grace windows and timezones (logs are UTC)?
+- Is the data_acquisition modeling decision explicit?

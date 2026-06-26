@@ -1,0 +1,42 @@
+Phase 5 - Run Drill-Down UI
+
+Goal:
+Give users a readable per-run view over the existing /api/runs/:run_id endpoint,
+reached by clicking a run in the job grid or an event in the error feed.
+
+Scope:
+- Add a drill-down view (a section or a second page in public/) that renders one
+  run's event timeline: dt, type (INFO/WARN/ERROR), func, tag, note, err_msg.
+- Link into it from the grid's run id cell and from error-feed rows, always passing
+  the run's inserted_at as the partition-pruning hint.
+- Visually distinguish WARN/ERROR events; make long err_msg readable (monospace,
+  wrapped). Render all log-derived text via textContent (no innerHTML) to avoid
+  injection from log payloads.
+- Handle the not-found (404) and invalid-id (400) responses gracefully.
+
+Non-goals:
+- No new server endpoints (the API already exists).
+- No framework/build step - keep the static vanilla-JS approach.
+- No editing/replaying runs; this is read-only.
+
+Expected files / layers:
+- public/ (HTML/JS/CSS only). Possibly a small client-side router or a second
+  HTML file.
+
+Expected validation:
+- Live smoke: open a run from the grid, confirm the timeline renders and the
+  request carries inserted_at (fast, single-partition). Open a bad id - confirm a
+  clean message, not a stack trace.
+
+Read-only / least-privilege constraints:
+- Frontend only; no DB or credential changes.
+
+Schema assumptions to confirm live:
+- Confirm the event object fields actually present across apps (some events have
+  err_msg only on ERROR; note shape varies - data_acquisition carries system_id/job_id).
+
+Review questions:
+- Is all log-derived content rendered as text (no innerHTML)?
+- Does every drill-down link pass inserted_at so the query prunes partitions?
+- Are 400/404 handled with clear copy?
+- Does the timeline stay readable for very large verbose_log arrays?

@@ -1,0 +1,39 @@
+Phase 0 - Workflow Scaffold
+
+Goal:
+Establish a measured, phase-based, prompt-driven development workflow for
+ops-dashboard so future work is repeatable and reviewable.
+
+Scope:
+- Add markdown/ process docs: FLOW, ARCHITECTURE_PRINCIPLES, PROMPTS,
+  PHASE_TEMPLATE, PHASE_LOG, REVIEW_CHECKLIST, ENVIRONMENT, DEPLOYMENT.
+- Add prompts/ with this scaffold prompt and the planned phase prompts.
+- Add notes/ for review handoffs and results.
+- Seed PHASE_LOG.md with the real project history (phases 0-3).
+- Encode the project's durable facts (read-only, json-not-jsonb, partition
+  pruning, least-privilege RO role, snapshot perf boundary, Docker-only deploy).
+
+Non-goals:
+- Do not change runtime app behavior.
+- Do not edit .env or expose any secret values.
+- Do not change queries, deployment, or DB credentials.
+- Do not duplicate the domain docs already in docs/ - reference them.
+
+Expected files / layers:
+- markdown/*, prompts/*, notes/* (new, repo root).
+
+Expected validation:
+- Confirm the workflow files exist and cross-reference correctly.
+- git status review. No app build required (docs-only).
+
+Read-only / least-privilege constraints:
+- None touched (documentation only).
+
+Schema assumptions to confirm live:
+- None (no query changes).
+
+Review questions:
+- Does the workflow define phase boundaries and the review gate clearly?
+- Are the durable rules (read-only, partition pruning, least privilege) explicit?
+- Is the roadmap scoped in a safe, reviewable order?
+- Does the system reference docs/ rather than duplicating it?
