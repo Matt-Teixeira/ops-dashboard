@@ -8,6 +8,125 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 7 — Self-Monitoring
+
+Date:
+2026-06-26
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_7_self_monitoring.txt`
+
+Git Commit:
+Pending
+
+## Goals
+
+- Let ops-dashboard log its own health into util.app_run_logs under
+  app_name="ops-dashboard" so it appears in its own grid and self-failures are visible.
+- Do it without weakening the read-only posture: the write is DB-enforced, scoped,
+  and opt-in.
+
+## Built
+
+- `db/setup-writer-role.sql`: the write path, enforced by the DB.
+  - `ops` schema (we own it); `util` stays pipeline-owned.
+  - `ops.log_ops_dashboard_run(run_id, verbose_log, warn_error_logs)` SECURITY DEFINER,
+    hard-codes app_name='ops-dashboard', fixed search_path, parameterized.
+  - `ops_writer_owner` (NOLOGIN) owns the function and is the ONLY role with INSERT on
+    util.app_run_logs — unreachable by any client.
+  - `ops_dashboard_rw` (the app's writer login) has EXECUTE on the function and nothing
+    else. No trigger/RLS on the shared partitioned table.
+- `utils/logger/{log.js,enums.js}`: minimal run-log builder (event shape matches the
+  suite); the first event carries note.argv[2]=job so the grid buckets it.
+- `lib/self-log.js`: pure `buildHeartbeat(health)` + `writeHeartbeat(writerDb, health)`.
+- `db/pg-writer.js` + `db/pgp.js` + `db/ssl.js`: a separate writer connection; the
+  pg-promise root and SSL builder are now shared so the writer reuses them. pg-pool.js
+  read behavior is unchanged (same role, config, exported object).
+- `server.js`: opt-in heartbeat (`SELF_LOG_ENABLED`, every `SELF_LOG_INTERVAL_MS`,
+  default 5 min) capturing asOf / cacheSize / coverage.unknown / lastRefreshMs /
+  lastError; a failed refresh becomes an ERROR event. Write failures are caught (never
+  crash serve).
+- `config/schedules.js`: `ops-dashboard/heartbeat` { everyMin:5, graceMin:10 }.
+- Env: `SELF_LOG_ENABLED`, `SELF_LOG_INTERVAL_MS`, `PG_WRITER_USER`,
+  `PG_WRITER_PASSWORD`. `test/self-log.test.js`: +6 tests (32 total).
+
+## Schema Facts Confirmed (live DB)
+
+- Insert shape ['app_name','run_id','verbose_log','warn_error_logs'] into
+  util.app_run_logs; inserted_at defaults to now(); verbose_log/warn_error_logs json.
+- The SECURITY DEFINER + NOLOGIN-owner design works: as ops_dashboard_rw the function
+  writes an 'ops-dashboard' row (POSITIVE); a direct INSERT is denied
+  (`permission denied for schema util`); ops_dashboard_ro cannot EXECUTE the function
+  (`permission denied for schema ops`).
+- Partition for now() exists (app_run_logs_2026_06); there is NO 2026_07 partition yet
+  and no DEFAULT partition (see Follow-Up).
+
+## Important Decisions
+
+### DB-enforced write scope (SECURITY DEFINER function, not code/trigger/RLS)
+
+Decision: the only write is a SECURITY DEFINER function that hard-codes the app_name;
+the writer login has EXECUTE-only; the INSERT-capable owner is NOLOGIN.
+Reason: makes "writes only app_name=ops-dashboard, nothing else" provable at the role
+level, not dependent on app code. Avoids triggers/RLS on the shared partitioned
+util.app_run_logs, which could break the pipeline apps' inserts.
+Tradeoff: a superuser/admin setup step (db/setup-writer-role.sql) + a second credential.
+
+### Opt-in, heartbeat (not a batch job)
+
+Decision: SELF_LOG_ENABLED gates self-logging (off by default); the unit is a periodic
+heartbeat from the long-running serve process.
+Reason: Phase 4 chose the in-process cache, so there is no batch job to hang logging
+off. Opt-in keeps the app read-only until the writer is provisioned.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: read path + role unchanged; the new write is a
+  separate, EXECUTE-only credential, DB-scoped to one app_name.
+- A dead process / DB outage writes no heartbeat -> the ops-dashboard row ages to STALE
+  (correct "down" signal; can't self-log an unreachable DB).
+- API compatibility: no endpoint/response changes; ops-dashboard just appears as a new
+  grid row.
+
+## Validation
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 32 pass (6 new + 26)
+psql ... -f db/setup-writer-role.sql                       # provision (+ pos/neg tests)
+docker compose up -d                                       # recreate (.env changed)
+```
+
+- 32/32 unit tests. Positive + both negative DB tests pass.
+- Live: boot logs "self-logging on"; heartbeat writes cleanly (0 failures post-fix);
+  grid shows 24 jobs incl. ops-dashboard/heartbeat = SUCCESS, not stale, coverage 24/24.
+
+## Problems Encountered
+
+- Problem: `SELECT void_function()` returns one (void) row, so pg-promise `db.none`
+  rejected with "No return data was expected" — even though the INSERT had run.
+  Resolution: use `db.one` and discard the row.
+
+## Follow-Up Tasks
+
+- Partition dependency: a now()-stamped insert needs the current month's partition.
+  Only through 2026_06 exist and there is no DEFAULT partition, so on 2026-07-01 both
+  the pipeline's inserts and our heartbeat fail until the July partition is created
+  (a pipeline-owned concern). Our write is non-fatal; watch for the ops-dashboard row
+  (and others) going STALE around month boundaries as the signal.
+- Optional: also write the JSON file to /opt/run-logs/ops-dashboard (mount exists);
+  deferred — the grid reads the DB row, the file is redundant for now.
+
+## Commit Readiness
+
+- Read-only read path + role unchanged: yes. Write is DB-scoped + opt-in: yes.
+- Schema assumptions confirmed live (incl. neg tests): yes.
+- Validation recorded: yes. Ready to commit: yes.
+
+---
+
 # Phase 6 — Real Schedule Cadences
 
 Date:

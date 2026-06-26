@@ -18,6 +18,12 @@
 module.exports = {
   // app_name/job  ->  { everyMin OR cron, graceMin }
 
+  // ops-dashboard self-monitoring (Phase 7): the serve process writes a heartbeat
+  // every SELF_LOG_INTERVAL_MS (default 5 min). 15-min budget tolerates a couple of
+  // missed beats; a dead process / DB outage stops the beats and the row ages to
+  // STALE -- the intended "dashboard is down" signal. Only present when SELF_LOG_ENABLED.
+  "ops-dashboard/heartbeat": { everyMin: 5, graceMin: 10 },
+
   // Aggregate of many staggered data_acquisition sub-jobs (ge_*, philips_*,
   // siemens_*, ip, offline_alert, schedule_0..7 at 00,30 / 10,40 / 15,45 / 16,46 /
   // 17,47 / 19,49 / 20,50 / 22,52 ... -- cron-jobs.txt "HHM DATA ACQUISITION" +

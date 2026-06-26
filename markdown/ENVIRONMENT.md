@@ -23,6 +23,10 @@ contract with safe placeholders.
 | `SUMMARY_OVERLAP_MS` | Grid tick re-scan overlap | default `300000` (5 min); each tick scans back this far behind the watermark to absorb insert-lag skew |
 | `SUMMARY_RECONCILE_MS` | Full re-scan interval | default `21600000` (6 h); every this long a tick does a full retention re-scan, catching any late/backfilled insert older than the overlap |
 | `GRID_REFRESH_MS` | Grid cache tick interval | default `120000` (2 min); each tick is cheap (only rows since the watermark) |
+| `SELF_LOG_ENABLED` | Self-monitoring on/off | default `false` (read-only). `true` writes a heartbeat run via the writer role |
+| `SELF_LOG_INTERVAL_MS` | Heartbeat interval | default `300000` (5 min); must align with the `ops-dashboard/heartbeat` cadence in `config/schedules.js` |
+| `PG_WRITER_USER` | Writer role | `ops_dashboard_rw` — EXECUTE-only on `ops.log_ops_dashboard_run`; created by `db/setup-writer-role.sql`. No fallback chain |
+| `PG_WRITER_PASSWORD` | Writer password | secret; `.env` only |
 
 ## Rules
 

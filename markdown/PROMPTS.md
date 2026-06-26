@@ -52,7 +52,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 4 | `prompt_4_summary_table.txt` | Completed | In-process incremental cache (Option B); grid served from cache (~3ms), dormant jobs visible/stale. See PHASE_LOG. |
 | 5 | `prompt_5_run_drilldown_ui.txt` | Completed | Frontend-only run drill-down: in-page hash router + event timeline over `/api/runs/:run_id`, reached from the grid and error feed. See PHASE_LOG. |
 | 6 | `prompt_6_real_schedules.txt` | Completed | Confirmed cron cadences + provenance; added 15 Philips variants; SIEMENS_CV left unknown; (default) stall budget; coverage surface (API + UI). See PHASE_LOG. |
-| 7 | `prompt_7_self_monitoring.txt` | Planned | Optional self-logging under `app_name = "ops-dashboard"`. |
+| 7 | `prompt_7_self_monitoring.txt` | Completed | Opt-in heartbeat under `app_name = "ops-dashboard"` via a DB-enforced writer; appears in its own grid. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.

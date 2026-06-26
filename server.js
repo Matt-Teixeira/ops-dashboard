@@ -17,6 +17,12 @@ const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
 const SUMMARY_RECONCILE_MS = Number(process.env.SUMMARY_RECONCILE_MS || 6 * 60 * 60 * 1000);
 const RETENTION_MS = SUMMARY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
+// Self-monitoring (Phase 7): opt-in. When on, the serve process writes a heartbeat
+// run (app_name=ops-dashboard) via the locked-down writer so the dashboard appears in
+// its own grid. Off by default -> the app stays fully read-only.
+const SELF_LOG_ENABLED = String(process.env.SELF_LOG_ENABLED || "").toLowerCase() === "true";
+const SELF_LOG_INTERVAL_MS = Number(process.env.SELF_LOG_INTERVAL_MS || 300000);
+
 // Version-agnostic RFC-4122 uuid shape; rejects anything that would make the
 // run_id cast fail in Postgres.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,6 +36,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const cache = createRunCache({ retentionDays: SUMMARY_RETENTION_DAYS, overlapMs: SUMMARY_OVERLAP_MS });
 let asOf = null;
 let lastError = null;
+let lastRefreshMs = null; // duration of the last successful refresh (for the heartbeat)
 let refreshing = false;
 let lastReconcileAt = 0; // epoch ms of the last full-retention scan
 
@@ -56,6 +63,7 @@ async function refreshOnce(now = new Date()) {
     cache.markReady();
     if (full) lastReconcileAt = now.getTime();
     asOf = new Date().toISOString();
+    lastRefreshMs = Date.now() - started;
     lastError = null;
     const cov = staleness.coverage(cache.values().map((r) => ({ app: r.app_name, job: r.job })));
     console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms; cadence unknown: ${cov.unknown}/${cov.total}${cov.unknown ? ` (${cov.unknownJobs.join(", ")})` : ""}`);
@@ -188,6 +196,36 @@ function start() {
   refreshOnce();
   const timer = setInterval(refreshOnce, GRID_REFRESH_MS);
   if (timer.unref) timer.unref();
+
+  if (SELF_LOG_ENABLED) startSelfLog();
+}
+
+// Self-monitoring heartbeat (Phase 7). Writes one ops-dashboard run per interval via
+// the locked-down writer, capturing the dashboard's own health. Never throws into the
+// process: a write failure (incl. a missing partition or DB blip) is logged and the
+// row simply doesn't appear, which ages the ops-dashboard row to STALE -- the right
+// "down" signal.
+function startSelfLog() {
+  const writerDb = require("./db/pg-writer");
+  const selfLog = require("./lib/self-log");
+  const beat = async () => {
+    try {
+      const cov = staleness.coverage(cache.values().map((r) => ({ app: r.app_name, job: r.job })));
+      await selfLog.writeHeartbeat(writerDb, {
+        asOf,
+        cacheSize: cache.size,
+        coverageUnknown: cov.unknown,
+        lastRefreshMs,
+        lastError,
+      });
+    } catch (err) {
+      console.error("[ops-dashboard] heartbeat write failed:", err.message);
+    }
+  };
+  beat();
+  const timer = setInterval(beat, SELF_LOG_INTERVAL_MS);
+  if (timer.unref) timer.unref();
+  console.log(`[ops-dashboard] self-logging on: heartbeat every ${SELF_LOG_INTERVAL_MS}ms as ops-dashboard/${selfLog.JOB}`);
 }
 
 module.exports = { buildApp, start, refreshOnce };
