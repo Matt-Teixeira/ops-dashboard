@@ -50,7 +50,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 2 | — (predates prompt system) | Completed | Background-refreshed grid snapshot (perf). See PHASE_LOG. |
 | 3 | — (predates prompt system) | Completed | Code-review hardening: RO role, uuid validation, SSL fail-closed, tests. See PHASE_LOG. |
 | 4 | `prompt_4_summary_table.txt` | Completed | In-process incremental cache (Option B); grid served from cache (~3ms), dormant jobs visible/stale. See PHASE_LOG. |
-| 5 | `prompt_5_run_drilldown_ui.txt` | Planned | Run drill-down UI over the existing `/api/runs/:run_id`. |
+| 5 | `prompt_5_run_drilldown_ui.txt` | Completed | Frontend-only run drill-down: in-page hash router + event timeline over `/api/runs/:run_id`, reached from the grid and error feed. See PHASE_LOG. |
 | 6 | `prompt_6_real_schedules.txt` | Planned | Replace placeholder cadences with real cron values; trustworthy staleness. |
 | 7 | `prompt_7_self_monitoring.txt` | Planned | Optional self-logging under `app_name = "ops-dashboard"`. |
 

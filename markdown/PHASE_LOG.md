@@ -8,6 +8,165 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 5 — Run Drill-Down UI
+
+Date:
+2026-06-26
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_5_run_drilldown_ui.txt`
+
+Git Commit:
+Pending
+
+## Goals
+
+- Give users a readable per-run event timeline over the existing
+  `GET /api/runs/:run_id`, reached from the job grid and the error feed.
+- Keep the phase frontend-only: no new endpoints, no query/DB/credential changes,
+  no framework or build step; don't change `/api/jobs/latest` or `/api/errors`
+  response shapes.
+
+## Built
+
+- `public/index.html` (only file changed): a hash-based router in the existing
+  static page. No hash → the dashboard (grid + error feed); `#run=<id>&at=<hint>`
+  → a drill-down view rendered into a new `#run-view` section.
+  - Grid run-id cell repointed from the raw `/api/runs` JSON URL to the in-page
+    drill-down, still passing the row's `inserted_at` as the hint.
+  - Error-feed rows are now clickable (cursor/hover affordance) and link to the
+    run using the event `dt` as the hint.
+  - Drill-down render: run header (app/job, derived status badge, run id,
+    inserted/started/ended, duration, event count) + an event timeline table
+    (When, Type, Func, Tag, Detail, Message). WARN/ERROR rows tinted; added a
+    neutral `.INFO` badge style.
+  - All log-derived text set via `textContent` (no `innerHTML`); `note` rendered
+    as text (surfaced `system_id`/`sme` + `job_id`, then full JSON).
+  - Large-payload guard: render at most `RENDER_CAP` (500) events initially with a
+    "show all N events" button to reveal the rest; rows built in a
+    `DocumentFragment`.
+  - Clean 400 ("Invalid run id.") / 404 ("Run not found — it may have aged out of
+    the 30-day window.") / generic-failure copy in the run view; no stack traces.
+- No changes to `server.js`, `db/queries.js`, or any API response shape.
+
+## Schema Facts Confirmed (live DB)
+
+- Event objects across all writing apps carry `dt`, `type` (INFO/WARN/ERROR),
+  `func`, `tag`, `run_id`, `note` (an object: `job_id`, `system_id`/`sme`,
+  `message`, `skip_reason`, …); `err_msg` is present only on ERROR / some WARN.
+  No doc corrections needed — matches `docs/logging-schema.md`.
+- Worst-case run is `data_acquisition` at ~1,625 events / ~680 KB text (drives the
+  RENDER_CAP). `/api/errors` events already include `run_id` and `dt`, so the
+  error-feed link needs no API change.
+- `EXPLAIN` on the hinted run query with both an `inserted_at` hint and a `dt`
+  hint shows `Subplans Removed: 6` — only `app_run_logs_2026_06` is scanned via
+  the inserted_at index. Both entry points prune to one monthly partition.
+
+## Important Decisions
+
+### Single-file hash router (no second HTML page)
+
+Decision: add an in-page hash router rather than a second `run.html`.
+Reason: reuses the existing `fmtTime`/`fmtDur`/`cell` helpers and styles, avoids a
+second markup fetch, and keeps the no-build static approach.
+Tradeoff: one slightly larger file; deep-linking to a run loads the dashboard
+lazily on first back-navigation (handled via a `dashboardLoaded` guard).
+
+### Cap the initial timeline render
+
+Decision: render up to 500 events, with a "show all" button for the remainder.
+Reason: the worst-case ~1,625-event `data_acquisition` run keeps the DOM and the
+first paint responsive without dropping data.
+Tradeoff: a one-click reveal for the few large runs; small runs are unaffected.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none — no new code path touches the DB; the
+  app still reads as `ops_dashboard_ro` over the unchanged endpoints.
+- Query / partition-pruning impact: none added; both drill-down entry points pass
+  a hint so the existing hinted query prunes to one partition (EXPLAIN-confirmed).
+- Performance (request-path latency) impact: none server-side; hinted run fetch
+  ~30–60 ms incl. the 680 KB worst-case payload. Client caps initial render.
+- Security impact: all log-derived content rendered via `textContent` — no
+  injection from log payloads; 400/404 surfaced as plain copy, not raw errors.
+- Deployment impact: none — static file served from the bind mount; no restart
+  or env change. Same `:8080` service.
+- API / response-shape compatibility impact: none; `/api/jobs/latest`,
+  `/api/errors`, `/api/runs/:run_id` all unchanged.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 20 pass
+docker run --rm -v "$SP":/s -w /s node:lts node --check inline.js   # inline script parses
+```
+
+Results:
+
+- Passed: `node --test` 20/20; inline-script syntax check OK.
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests (service live on :8080, static file served from bind mount):
+
+- Grid-style request `/api/runs/<id>?inserted_at=<lastRun>` → 200 in ~54 ms.
+- Error-feed-style request `/api/runs/<id>?inserted_at=<event dt>` → 200 in ~58 ms.
+- Both hints: `EXPLAIN` shows `Subplans Removed: 6`, single `app_run_logs_2026_06`
+  index scan (one-partition prune).
+- Large run (1,625 events) → 200 in ~30 ms, 680 KB; cap + "show all" path exercised.
+- Bad id (`not-a-uuid`) → 400 `{"error":"invalid run_id ..."}`; missing well-formed
+  id → 404 `{"error":"run not found"}`. Both render as clean copy, no stack trace.
+- Served `/` carries the new markup (`run-view`, `runHref`, `RENDER_CAP`).
+
+## Review Notes
+
+Source:
+
+- Self-review against `markdown/REVIEW_CHECKLIST.md` (walked below). No external
+  handoff generated for this frontend-only phase.
+
+Critical issues:
+
+- None.
+
+Accepted fixes:
+
+- None.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- Problem: `node` is not on the host PATH (apps run in Docker); a probe script in
+  the scratchpad isn't under the compose bind mount.
+  Resolution: ran probes/EXPLAIN in a `node:lts` container on `pg_net` with the
+  probe bind-mounted as a single file into `/workspace`; removed the stray mount
+  artifact before committing.
+
+## Follow-Up Tasks
+
+- None. (Phase 6 — real cron cadences — is next per the roadmap.)
+
+## Commit Readiness
+
+- Requirements implemented: yes (timeline, both entry points + hints, textContent,
+  400/404, large-payload cap).
+- Read-only / least-privilege rules hold: yes (no new DB surface).
+- Time-windowed queries partition-pruned: yes (EXPLAIN-confirmed, both hints).
+- Schema assumptions confirmed live: yes (event fields, worst-case size, pruning).
+- Review findings addressed or deferred: none outstanding.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
 # Phase 4 — Incremental Run Cache (in-process)
 
 Date:

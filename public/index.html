@@ -18,30 +18,50 @@
     .SUCCESS { background: #2e7d32; }
     .WARN    { background: #ed6c02; }
     .ERROR   { background: #c62828; }
+    .INFO    { background: #607d8b; }
     .stale   { background: #6a1b9a; }
     .err-msg { white-space: pre-wrap; max-width: 60ch; color: #c62828; font-family: ui-monospace, monospace; font-size: .76rem; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     button { font: inherit; padding: .2rem .6rem; cursor: pointer; }
+    a { color: inherit; }
+    /* Error-feed rows link into the run drill-down. */
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover { background: #8881; }
+    /* WARN/ERROR rows stand out in the run timeline. */
+    tr.row-WARN  { background: #ed6c0218; }
+    tr.row-ERROR { background: #c6282818; }
+    td.detail { white-space: pre-wrap; max-width: 50ch; font-family: ui-monospace, monospace; font-size: .76rem; color: #888; }
+    .run-meta { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-size: .82rem; margin: .5rem 0 1rem; }
+    .run-meta dt { color: #888; }
+    .run-meta dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .run-msg { margin: 1rem 0; font-size: .9rem; }
+    .cap-note { margin: .8rem 0; }
   </style>
 </head>
 <body>
   <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
   <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button></div>
 
-  <section>
-    <h2 style="font-size:.95rem">Job grid</h2>
-    <table id="grid"><thead><tr>
-      <th>App</th><th>Job</th><th>Status</th><th>Last run</th><th>Age</th>
-      <th>Duration</th><th>Issues</th><th>Run id</th>
-    </tr></thead><tbody></tbody></table>
-  </section>
+  <!-- Dashboard view: job grid + error feed. Hidden while a run drill-down is open. -->
+  <div id="dashboard">
+    <section>
+      <h2 style="font-size:.95rem">Job grid</h2>
+      <table id="grid"><thead><tr>
+        <th>App</th><th>Job</th><th>Status</th><th>Last run</th><th>Age</th>
+        <th>Duration</th><th>Issues</th><th>Run id</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
 
-  <section>
-    <h2 style="font-size:.95rem">Error feed <span class="muted">(recent WARN/ERROR)</span></h2>
-    <table id="errors"><thead><tr>
-      <th>When</th><th>App</th><th>Type</th><th>Func</th><th>Message</th>
-    </tr></thead><tbody></tbody></table>
-  </section>
+    <section>
+      <h2 style="font-size:.95rem">Error feed <span class="muted">(recent WARN/ERROR &middot; click a row for the run)</span></h2>
+      <table id="errors"><thead><tr>
+        <th>When</th><th>App</th><th>Type</th><th>Func</th><th>Message</th>
+      </tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+
+  <!-- Run drill-down view: one run's event timeline. Populated by showRun(). -->
+  <section id="run-view" hidden></section>
 
   <script>
     const fmtAge = (ms) => {
@@ -86,8 +106,9 @@
         tr.appendChild(cell(j.issueCount, "num"));
         const idCell = document.createElement("td");
         const link = document.createElement("a");
-        // Pass inserted_at so the drill-down query prunes to one partition.
-        link.href = `/api/runs/${j.runId}?inserted_at=${encodeURIComponent(j.lastRun)}`;
+        // Open the drill-down view, passing inserted_at as the hint (`at`) so the
+        // run query prunes to one partition.
+        link.href = runHref(j.runId, j.lastRun);
         link.textContent = j.runId;
         idCell.appendChild(link);
         tr.appendChild(idCell);
@@ -101,6 +122,13 @@
       tb.innerHTML = "";
       for (const e of r.events) {
         const tr = document.createElement("tr");
+        // Link to the run drill-down, using the event dt as the hint. The hinted
+        // run query matches inserted_at within ±1h, and a run's events are within
+        // minutes of its inserted_at, so dt prunes to the right partition.
+        if (e.run_id) {
+          tr.className = "clickable";
+          tr.addEventListener("click", () => { location.hash = runHash(e.run_id, e.dt); });
+        }
         tr.appendChild(cell(fmtTime(e.dt)));
         tr.appendChild(cell(e.app_name));
         const ty = cell(""); const b = document.createElement("span"); b.className = "badge " + e.type; b.textContent = e.type; ty.appendChild(b); tr.appendChild(ty);
@@ -110,12 +138,195 @@
       }
     }
 
+    // --- drill-down: hash route + run timeline -------------------------------
+
+    // Hash links carry the run id and a partition-pruning hint (`at`): the grid
+    // passes the row's inserted_at, the error feed passes the event dt. Both are
+    // sent to the API as ?inserted_at=<at>.
+    const runHash = (id, hint) => "run=" + encodeURIComponent(id) + (hint ? "&at=" + encodeURIComponent(hint) : "");
+    const runHref = (id, hint) => "#" + runHash(id, hint);
+
+    const RENDER_CAP = 500; // worst-case data_acquisition runs carry ~1600 events
+
+    let dashboardLoaded = false;
+
     async function refresh() {
-      try { await Promise.all([loadGrid(), loadErrors()]); }
+      try { await Promise.all([loadGrid(), loadErrors()]); dashboardLoaded = true; }
       catch (err) { document.getElementById("meta").textContent = "· error: " + err.message; }
     }
+
+    function backLink() {
+      const a = document.createElement("a");
+      a.href = "#"; a.textContent = "← back"; a.className = "muted";
+      return a;
+    }
+
+    // Run status from the timeline, matching the suite rule (ERROR > WARN > SUCCESS).
+    function runStatus(events) {
+      let warn = false;
+      for (const e of events) {
+        if (e && e.type === "ERROR") return "ERROR";
+        if (e && e.type === "WARN") warn = true;
+      }
+      return warn ? "WARN" : "SUCCESS";
+    }
+
+    // Compact, text-only rendering of an event's `note` object: surface the ids
+    // operators look for, then the full note as JSON. Never interpreted as HTML.
+    function noteText(note) {
+      if (note == null) return "";
+      if (typeof note !== "object") return String(note);
+      const id = note.system_id || note.sme;
+      const head = [id && ("system: " + id), note.job_id && ("job: " + note.job_id)].filter(Boolean).join("  ");
+      const json = JSON.stringify(note);
+      return head ? head + "\n" + json : json;
+    }
+
+    const TYPE_CLASS = { INFO: "INFO", WARN: "WARN", ERROR: "ERROR" };
+
+    function eventRow(e) {
+      const tr = document.createElement("tr");
+      const type = e && e.type;
+      if (type === "WARN" || type === "ERROR") tr.className = "row-" + type;
+      tr.appendChild(cell(fmtTime(e && e.dt)));
+      const ty = cell("");
+      if (type) {
+        const b = document.createElement("span");
+        b.className = "badge " + (TYPE_CLASS[type] || "INFO"); // unknown types: neutral badge, real text
+        b.textContent = type;
+        ty.appendChild(b);
+      } else { ty.textContent = "—"; }
+      tr.appendChild(ty);
+      tr.appendChild(cell((e && e.func) || "—"));
+      tr.appendChild(cell((e && e.tag) || "—"));
+      tr.appendChild(cell(noteText(e && e.note), "detail"));
+      tr.appendChild(cell((e && e.err_msg) || "", "err-msg"));
+      return tr;
+    }
+
+    function renderRunMessage(view, msg) {
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const p = document.createElement("p");
+      p.className = "run-msg";
+      p.textContent = msg;
+      view.appendChild(p);
+    }
+
+    function renderRun(view, data) {
+      view.replaceChildren();
+      const events = Array.isArray(data.events) ? data.events : [];
+
+      view.appendChild(backLink());
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = (data.app || "?") + " / " + (data.job || "?") + " ";
+      const status = runStatus(events);
+      const badge = document.createElement("span");
+      badge.className = "badge " + status;
+      badge.textContent = status;
+      h2.appendChild(badge);
+      view.appendChild(h2);
+
+      const meta = document.createElement("dl");
+      meta.className = "run-meta";
+      const addMeta = (k, v) => {
+        const dt = document.createElement("dt"); dt.textContent = k;
+        const dd = document.createElement("dd"); dd.textContent = v;
+        meta.appendChild(dt); meta.appendChild(dd);
+      };
+      addMeta("Run id", data.runId || "—");
+      addMeta("Inserted at", fmtTime(data.insertedAt));
+      addMeta("Started", fmtTime(data.startedAt));
+      addMeta("Ended", fmtTime(data.endedAt));
+      addMeta("Duration", fmtDur(data.durationMs));
+      addMeta("Events", String(events.length));
+      view.appendChild(meta);
+
+      if (!events.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No events recorded for this run.";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["When", "Type", "Func", "Tag", "Detail", "Message"]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      table.appendChild(tb);
+      view.appendChild(table);
+
+      // Render in one fragment pass; cap the initial render so a huge run stays
+      // responsive, with a button to reveal the rest on demand.
+      const appendRows = (from, to) => {
+        const frag = document.createDocumentFragment();
+        for (let i = from; i < to; i++) frag.appendChild(eventRow(events[i]));
+        tb.appendChild(frag);
+      };
+      appendRows(0, Math.min(events.length, RENDER_CAP));
+
+      if (events.length > RENDER_CAP) {
+        const note = document.createElement("div");
+        note.className = "cap-note muted";
+        const label = document.createElement("span");
+        label.textContent = "Showing " + RENDER_CAP + " of " + events.length + " events. ";
+        const btn = document.createElement("button");
+        btn.textContent = "show all " + events.length;
+        btn.addEventListener("click", () => { appendRows(RENDER_CAP, events.length); note.remove(); });
+        note.appendChild(label); note.appendChild(btn);
+        view.appendChild(note);
+      }
+    }
+
+    async function showRun(runId, hint) {
+      document.getElementById("dashboard").hidden = true;
+      const view = document.getElementById("run-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      renderRunMessage(view, "Loading run…");
+
+      let res;
+      const url = "/api/runs/" + encodeURIComponent(runId) + (hint ? "?inserted_at=" + encodeURIComponent(hint) : "");
+      try { res = await fetch(url); }
+      catch { return renderRunMessage(view, "Couldn't load this run."); }
+
+      if (res.status === 400) return renderRunMessage(view, "Invalid run id.");
+      if (res.status === 404) return renderRunMessage(view, "Run not found — it may have aged out of the 30-day window.");
+      if (!res.ok) return renderRunMessage(view, "Couldn't load this run.");
+
+      let data;
+      try { data = await res.json(); }
+      catch { return renderRunMessage(view, "Couldn't load this run."); }
+      renderRun(view, data);
+    }
+
+    function showDashboard() {
+      document.getElementById("run-view").hidden = true;
+      document.getElementById("dashboard").hidden = false;
+      if (!dashboardLoaded) refresh();
+    }
+
+    function route() {
+      const hash = location.hash.slice(1);
+      if (hash.startsWith("run=")) {
+        const p = new URLSearchParams(hash);
+        showRun(p.get("run"), p.get("at"));
+      } else {
+        showDashboard();
+      }
+    }
+
     document.getElementById("refresh").addEventListener("click", refresh);
-    refresh();
+    window.addEventListener("hashchange", route);
+    route();
   </script>
 </body>
 </html>
