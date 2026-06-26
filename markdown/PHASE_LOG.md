@@ -20,7 +20,7 @@ Prompt:
 `prompts/prompt_6_real_schedules.txt`
 
 Git Commit:
-Pending
+234574d (impl); SHA recorded in a follow-up commit
 
 ## Goals
 
