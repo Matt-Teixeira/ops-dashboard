@@ -20,6 +20,7 @@
     .ERROR   { background: #c62828; }
     .INFO    { background: #607d8b; }
     .stale   { background: #6a1b9a; }
+    .unknown { background: #9e9e9e; }
     .err-msg { white-space: pre-wrap; max-width: 60ch; color: #c62828; font-family: ui-monospace, monospace; font-size: .76rem; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     button { font: inherit; padding: .2rem .6rem; cursor: pointer; }
@@ -85,8 +86,9 @@
         return;
       }
       const asOf = r.asOf ? new Date(r.asOf).toLocaleTimeString() : "—";
+      const unknownCadence = r.coverage && r.coverage.unknown ? ` · ${r.coverage.unknown} cadence unknown` : "";
       document.getElementById("meta").textContent =
-        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOf}` + (r.stale ? ` · ⚠ ${r.stale}` : "");
+        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOf}` + unknownCadence + (r.stale ? ` · ⚠ ${r.stale}` : "");
       const tb = document.querySelector("#grid tbody");
       tb.innerHTML = "";
       for (const j of r.jobs) {
@@ -99,6 +101,9 @@
         badge.textContent = j.status;
         st.appendChild(badge);
         if (j.stale) { const s = document.createElement("span"); s.className = "badge stale"; s.textContent = "STALE"; s.style.marginLeft = ".3rem"; st.appendChild(s); }
+        // stale === null: no configured cadence. Mark it so an unknown job is never
+        // mistaken for a healthy one (its run-status badge alone could read "green").
+        else if (j.stale === null) { const u = document.createElement("span"); u.className = "badge unknown"; u.textContent = "? CADENCE"; u.title = "no configured cadence — staleness unknown"; u.style.marginLeft = ".3rem"; st.appendChild(u); }
         tr.appendChild(st);
         tr.appendChild(cell(fmtTime(j.lastRun)));
         tr.appendChild(cell(fmtAge(j.ageMs), "num"));

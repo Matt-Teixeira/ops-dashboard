@@ -57,7 +57,8 @@ async function refreshOnce(now = new Date()) {
     if (full) lastReconcileAt = now.getTime();
     asOf = new Date().toISOString();
     lastError = null;
-    console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms`);
+    const cov = staleness.coverage(cache.values().map((r) => ({ app: r.app_name, job: r.job })));
+    console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms; cadence unknown: ${cov.unknown}/${cov.total}${cov.unknown ? ` (${cov.unknownJobs.join(", ")})` : ""}`);
   } catch (err) {
     lastError = err.message; // keep last-good cache; watermark not advanced on failure
     console.error(`[ops-dashboard] grid ${phase} failed:`, err.message);
@@ -108,11 +109,15 @@ function buildApp() {
     });
     // cache.values() is Map order; sort for a stable grid (SQL no longer orders it).
     jobs.sort((a, b) => a.app.localeCompare(b.app) || a.job.localeCompare(b.job));
+    // Coverage is additive: which grid jobs have no configured cadence (stale=null).
+    // Grows as new apps start logging without a schedule entry -- a drift signal.
+    const coverage = staleness.coverage(jobs.map((j) => ({ app: j.app, job: j.job })));
     res.json({
       lookbackDays: SUMMARY_RETENTION_DAYS,
       asOf,
       stale: lastError ? `last refresh failed: ${lastError}` : null,
       count: jobs.length,
+      coverage,
       jobs,
     });
   });

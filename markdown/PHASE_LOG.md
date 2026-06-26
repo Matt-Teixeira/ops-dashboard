@@ -8,6 +8,177 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 6 — Real Schedule Cadences
+
+Date:
+2026-06-26
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_6_real_schedules.txt`
+
+Git Commit:
+Pending
+
+## Goals
+
+- Make the STALE badge trustworthy: confirm/complete `config/schedules.js` against
+  the real cron, fill the jobs the grid shows but config omitted, add provenance to
+  every entry, and stop asserting a cadence for a job that isn't scheduled.
+- Surface coverage — which grid (app, job) pairs have no configured cadence
+  (stale=null) — so silent drift is visible as new apps start logging. Unknown must
+  stay null, never falsely green.
+
+## Built
+
+- `config/schedules.js`: rewritten from placeholders to confirmed cadences, each with
+  a provenance comment (cron file line + observed median gap, app_run_logs 2026-06-26).
+  - Added the 15 Philips variants the grid shows but config omitted:
+    `PHILIPS_MRI_MONITOR_1..5`, `_RMMU_1..5`, `_LOG_1..5` (all every 30 min).
+  - `SIEMENS_CV`: removed its false 30-min entry — it is in neither cron file and has
+    no runs in 30 days (absent from the grid). Left intentionally unknown (stale=null),
+    documented inline.
+  - `data_acquisition/(default)`: retuned to `everyMin: 5, graceMin: 5` (10-min stall
+    budget, ~3.5× the observed p90 gap of 2.8 min) so it flags a full-pipeline stall
+    without flapping; documented that `everyMin` here is a silence budget, not a literal
+    schedule.
+  - Recorded the known wall-clock schedules (`monday/EQUIPMENT_RTT 25 7 * * *`,
+    `acumatica 20 7 * * *`, `part-source/INV_FEED_SYNC 0 6 * * *`) as commented future
+    entries — deferred until a cron evaluator and those apps' logs exist.
+- `lib/staleness.js`: added pure, exported `isConfigured(app, job)` and
+  `coverage(pairs)` → `{ total, configured, unknown, unknownJobs }`. `evaluate`
+  unchanged.
+- `server.js`: `/api/jobs/latest` now returns an additive `coverage` object (existing
+  fields untouched); the grid-refresh log line reports `cadence unknown: N/total`.
+- `public/index.html`: header `meta` appends `· N cadence unknown` when > 0; a
+  `stale === null` row now renders a muted `? CADENCE` badge (new `.unknown` class) so
+  an unknown-cadence job is never visually mistaken for a healthy one.
+- `test/staleness.test.js`: +7 tests (configured Philips variant, SIEMENS_CV stays
+  null, the (default) 10-min budget within/over, `isConfigured`, `coverage`).
+
+## Schema Facts Confirmed (live DB)
+
+- Re-ran `notes/schedule-cadence-probe.sql` as `ops_dashboard_ro`: every active
+  ge/philips grid job (incl. all 15 Philips variants) = 30.0 min median gap;
+  `data_acquisition/(default)` = 0.4 min median / 2.8 min p90 (3-day window).
+- 30-day grid set = 23 (app, job) pairs (matches the cache). `hhm_rpp_siemens` has
+  only `SIEMENS_CT` and `SIEMENS_MRI` (both ~407 h / ~17 d idle, dormant); there is
+  **no** `SIEMENS_CV` in the grid or cron — confirming it must be unknown, not 30 min.
+- After this phase all 23 grid jobs resolve to a real boolean (no stale=null); the
+  15 previously-unconfigured Philips variants are now covered.
+
+## Important Decisions
+
+### data_acquisition/(default) stall budget = 10 min
+
+Decision: `everyMin: 5, graceMin: 5` (10-min budget), down from the 15/15 placeholder.
+Reason: it is the aggregate of many staggered sub-jobs (median gap 0.4 min, p90 2.8
+min), so a meaningful signal is "the whole pipeline went silent." 10 min is ~3.5× p90
+— flags a real stop within ~10 min without flapping on normal idle.
+Tradeoff: `everyMin` is being used as a silence budget, not a literal interval;
+documented inline. Per-system_id staleness stays out of scope (one (default) bucket).
+
+### Defer cron-string parsing; record wall-clock crons as comments
+
+Decision: keep `everyMin` only; record `monday`/`acumatica`/`part-source` wall-clock
+crons as commented future entries.
+Reason: every current grid job is interval-scheduled and timezone-independent, so a
+cron evaluator is unnecessary now; those apps don't log to the DB yet.
+Tradeoff: activating them later needs a cron parser in `lib/staleness.js` and a
+job-name (argv[2]) casing check — noted in the config comment.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none — config + pure logic only; coverage reads
+  the in-memory cache. Verification ran as `ops_dashboard_ro`. No write path added.
+- Query / partition-pruning impact: none — no new query; the probe is bounded by
+  `inserted_at` and run out-of-band.
+- Performance (request-path latency) impact: negligible — `coverage()` is O(23) over
+  the in-memory grid per request; live grid still ~ms.
+- Security impact: none — `.env` uncommitted; no secrets in code/docs; error shapes
+  unchanged.
+- Deployment impact: none beyond a restart to load the new config (source bind-mounted;
+  no env or compose change).
+- API / response-shape compatibility impact: additive `coverage` field only;
+  `/api/errors` and `/api/runs/:run_id` untouched.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test       # 26 pass
+docker run --rm -v "$PWD":/w -w /w node:lts node --check server.js
+psql ... -U ops_dashboard_ro -f notes/schedule-cadence-probe.sql   # cadences re-confirmed
+docker compose restart app                                    # load new config
+```
+
+Results:
+
+- Passed: `node --test` 26/26 (7 new); `server.js` syntax OK.
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests (service live on :8080 after restart):
+
+- Boot log: `grid bootstrap: 23 rows -> 23 jobs ...; cadence unknown: 0/23`.
+- `/api/jobs/latest`: `coverage = {total:23, configured:23, unknown:0, unknownJobs:[]}`;
+  stale tally 2 true / 21 false / 0 null — every grid job resolves to a real boolean.
+- Dormant siemens read correctly: `SIEMENS_CT=true`, `SIEMENS_MRI=true` (~17 d idle).
+- Unknown-cadence count (0) matches the jobs left unconfigured in the grid (none).
+- Served `/` carries the new markup (`cadence unknown`, `? CADENCE`, `.badge unknown`,
+  `r.coverage`).
+
+## Review Notes
+
+Source:
+
+- Self-review against `markdown/REVIEW_CHECKLIST.md` (walked: scope/non-goals held;
+  read-only + RO role intact; no new query; additive response shape; secrets clean;
+  validation recorded).
+
+Critical issues:
+
+- None.
+
+Accepted fixes:
+
+- None (no external review this phase).
+
+Deferred findings:
+
+- None. (Wall-clock cron activation is intentionally deferred to a future phase with a
+  cron evaluator, recorded as commented config entries.)
+
+## Problems Encountered
+
+- Problem: the running container caches `config/schedules.js` at require-time, so new
+  cadences don't take effect until restart.
+  Resolution: `docker compose restart app` (source is bind-mounted; no rebuild needed),
+  then confirmed the boot log + grid coverage reflected the new config.
+
+## Follow-Up Tasks
+
+- When `monday` / `acumatica` / `part-source` (and other apps) start logging to the DB,
+  activate their commented wall-clock entries — which needs a cron evaluator in
+  `lib/staleness.js` and confirming each job's argv[2] casing. The coverage count will
+  flag them as unknown until then.
+
+## Commit Readiness
+
+- Requirements implemented: yes (confirmed cadences + provenance, 15 variants added,
+  SIEMENS_CV unknown, (default) stall budget, coverage surface + UI).
+- Read-only / least-privilege rules hold: yes (config/logic only; RO role).
+- Time-windowed queries partition-pruned: yes (no new query; probe `inserted_at`-bound).
+- Schema assumptions confirmed live: yes (probe + 30-day grid set re-run as RO).
+- Review findings addressed or deferred: none outstanding.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
 # Phase 5 — Run Drill-Down UI
 
 Date:
