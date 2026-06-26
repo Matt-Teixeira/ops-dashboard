@@ -7,8 +7,14 @@ reached by clicking a run in the job grid or an event in the error feed.
 Scope:
 - Add a drill-down view (a section or a second page in public/) that renders one
   run's event timeline: dt, type (INFO/WARN/ERROR), func, tag, note, err_msg.
-- Link into it from the grid's run id cell and from error-feed rows, always passing
-  the run's inserted_at as the partition-pruning hint.
+- Link into it and always pass a partition-pruning hint:
+  * Grid run-id cell: it already links to the raw /api/runs JSON with
+    ?inserted_at=<lastRun>. Repoint it at the new view, keeping the inserted_at hint.
+  * Error-feed rows: these carry run_id and the event `dt` but NOT inserted_at
+    (the /api/errors response has no inserted_at). Pass the event `dt` as the hint
+    -- valid because the drill-down query matches inserted_at within a +/-1h window
+    and every event dt is within minutes of the run's inserted_at (runs last
+    seconds to ~5 min). This keeps the phase frontend-only (no /api/errors change).
 - Visually distinguish WARN/ERROR events; make long err_msg readable (monospace,
   wrapped). Render all log-derived text via textContent (no innerHTML) to avoid
   injection from log payloads.
@@ -24,19 +30,26 @@ Expected files / layers:
   HTML file.
 
 Expected validation:
-- Live smoke: open a run from the grid, confirm the timeline renders and the
-  request carries inserted_at (fast, single-partition). Open a bad id - confirm a
-  clean message, not a stack trace.
+- Live smoke: open a run from the grid AND from an error-feed row; confirm the
+  timeline renders and each request carries a hint (inserted_at from the grid, dt
+  from the error feed) so it prunes to one partition (fast). Open a bad id ->
+  confirm a clean message, not a stack trace.
 
 Read-only / least-privilege constraints:
-- Frontend only; no DB or credential changes.
+- Frontend only; no DB, query, or credential changes (drill-down links pass the
+  hint the existing response already provides -- inserted_at or event dt).
 
 Schema assumptions to confirm live:
 - Confirm the event object fields actually present across apps (some events have
   err_msg only on ERROR; note shape varies - data_acquisition carries system_id/job_id).
+- Note run size: a drill-down fetches the FULL verbose_log array for one run.
+  data_acquisition runs can carry hundreds of events (and large notes), so the
+  payload/DOM can be big -- confirm a worst-case run still renders acceptably.
 
 Review questions:
 - Is all log-derived content rendered as text (no innerHTML)?
-- Does every drill-down link pass inserted_at so the query prunes partitions?
+- Does every drill-down link pass a hint (inserted_at from the grid, dt from the
+  error feed) so the query prunes partitions?
 - Are 400/404 handled with clear copy?
-- Does the timeline stay readable for very large verbose_log arrays?
+- Does the timeline stay readable AND performant for a very large verbose_log
+  (e.g. a big data_acquisition run) -- consider capping/lazy-rendering if needed?
