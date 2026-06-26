@@ -1,71 +1,90 @@
-Phase 4 - Incremental Summary Table
+Phase 4 - Incremental Run Cache (in-process)
+
+Chosen approach: OPTION B - an in-process incremental cache. The grid is served
+from an in-memory structure that parses each app_run_logs row at most once per
+process lifetime. We do NOT introduce a DB write surface this phase. The DB
+summary-table variant (Option A: an owned ops schema + writer role + DDL) is
+DEFERRED to a possible later phase, only if durability across restarts or
+multi-instance sharing is ever needed. We run a single instance, so in-process is
+sufficient and keeps the app fully read-only.
 
 Goal:
-Replace the heavy background grid query with an incremental summary table so the
-job grid is computed from pre-parsed rows, not by re-detoasting ~150 MB of
-verbose_log JSON every refresh. Each app_run_logs row should be parsed at most
-once, ever.
+Retire the heavy background grid query (~28s, detoasts ~150 MB of verbose_log
+JSON every refresh) by parsing only NEW rows incrementally and keeping a small
+latest-run-per-(app,job) map in memory.
 
-Background:
-The grid query parses status/job/duration from json over a 7-day window and takes
-~17-28s (data_acquisition alone is ~99 MB of blobs). Phase 2 moved it to a
-background snapshot so users aren't blocked, but the cost still grows with the
-table. This phase retires that cost.
+Decided design (resolved before this phase; do not re-litigate without sign-off):
+
+1. Grid semantics - LAST RUN PER (app, job), not a fixed lookback. Dormant jobs
+   stay visible with an age + stale badge instead of vanishing (a silently-stopped
+   job is the #1 thing to surface). The cache retains any (app, job) seen within a
+   retention window (default 30 days, env SUMMARY_RETENTION_DAYS); entries older
+   than the window age out so one-off/typo'd jobs do not accumulate. This
+   supersedes GRID_LOOKBACK_DAYS=7 for the grid.
+
+2. Watermark - idempotent, with an overlap re-scan, no dedup set. The watermark is
+   the max inserted_at processed. Each tick scans inserted_at >= watermark - OVERLAP
+   (default 5 min, env) to absorb commit/clock skew. Because the map only keeps the
+   latest run per (app, job), reprocessing a row is idempotent (re-sets the same or a
+   newer value), so no run_id dedup memory is required.
+
+3. Snapshot replacement - remove the Phase 2 full-rescan refreshGrid/gridSnapshot.
+   The incremental cache does one bootstrap scan on boot (bounded by the retention
+   window), then cheap incremental ticks (GRID_REFRESH_MS). Preserve the existing
+   instant-serve UX: asOf timestamp and the 503 "warming" state until the first
+   (bootstrap) load completes.
 
 Scope:
-- Create a summary table in a schema this app owns (e.g. ops.run_summary) with one
-  row per run_id: app_name, job, run_id, inserted_at, status, duration_ms,
-  issue_count, started_at, ended_at.
-- Add an incremental refresh job that processes only NEW rows since a stored
-  inserted_at watermark (a registry job alongside serve, e.g.
-  `node index.js refresh_summary`), parsing each row once.
-- Repoint /api/jobs/latest to read DISTINCT ON (app_name, job) from the summary
-  table (millisecond query), keeping the same response shape.
-- Decide and document the refresh trigger: in-process interval vs. external cron
-  invocation of the batch job. Prefer the batch-job pattern the suite already uses,
-  with the in-process interval as a fallback.
-- Provide the table DDL and grants as a committed SQL file (db/). Role split is
-  fixed by rule, not an open question:
-  * DDL (CREATE SCHEMA/TABLE) is applied by an admin/migration role - NEVER by
-    ops_dashboard_ro, which by the Least-Privilege Rule cannot create objects.
-  * The grid reader keeps using ops_dashboard_ro, granted SELECT on the summary
-    table only.
-  * The refresh writer is a SEPARATE, minimal role that can write ONLY the owned
-    summary schema and read util.app_run_logs - never write any pipeline table.
+- Add an in-process cache module (e.g. lib/run-cache.js): a Map keyed by
+  (app_name, job) -> { run_id, inserted_at, started_at, ended_at, status,
+  duration_ms, issue_count }. Bootstrap (one bounded scan), incremental update
+  (since watermark - overlap), and eviction (older than retention).
+- Reuse the existing SQL that parses status/job/duration in SQL (db/queries.js) so
+  blobs are not shipped to Node; bound it by inserted_at for both bootstrap and tick.
+- Repoint /api/jobs/latest to read from the cache (DISTINCT-by-key latest is just
+  the map's values). Keep the JSON response shape identical; age/staleness still
+  computed per-request from each entry's inserted_at.
+- Wire bootstrap + interval into server start(); keep asOf and the 503 warming path.
+- Update ENVIRONMENT.md / .env.example with SUMMARY_RETENTION_DAYS and the overlap
+  var; retire or repurpose GRID_LOOKBACK_DAYS for the grid (errors feed keeps its own).
 
 Non-goals:
-- Do not change /api/errors or /api/runs/:run_id behavior.
-- Do not write to any pipeline table; the summary table is ours (ops schema).
-- Do not change the public API response shape for the grid.
+- No DB writes, no new schema/table, no writer role (that is deferred Option A).
+- Do not change /api/errors or /api/runs/:run_id.
+- Do not change the grid response shape consumed by public/index.html.
 - Do not add alerting.
 
 Expected files / layers:
-- db/ (new DDL + grants SQL), db/queries.js (new summary read + watermark queries),
-  a new jobs/ module for the refresh, index.js (register the job), server.js
-  (read from summary; the background snapshot may become a thin cache or be removed),
-  config/env or ENVIRONMENT.md (any new vars), tests.
+- lib/run-cache.js (new), db/queries.js (bootstrap/tick queries bounded by
+  inserted_at), server.js (serve from cache; remove old snapshot), index.js (no
+  change unless a job is added), .env.example + markdown/ENVIRONMENT.md, tests.
 
 Expected validation:
-- node --test for the parse/watermark logic (pure where possible).
-- Live: run the refresh job once, confirm row counts match a direct query, then
-  EXPLAIN the new grid read to confirm it is a cheap indexed scan (no json detoast).
-- Smoke: grid endpoint returns the same shape and is fast; numbers match the old query.
+- node --test for the cache logic (bootstrap merge, incremental merge is
+  idempotent, eviction by retention, watermark advance). Keep it unit-testable by
+  injecting row arrays rather than a live DB.
+- Live: start the service, confirm the grid warms (bootstrap), then confirm a tick
+  only queries inserted_at >= watermark - overlap (cheap) and the numbers match a
+  direct query. Confirm a dormant job (e.g. siemens, last run > 7 days) now appears
+  with a stale badge.
+- Confirm cold-start (bootstrap) time is acceptable behind the warming state for the
+  chosen retention window; tune SUMMARY_RETENTION_DAYS if needed.
 
 Read-only / least-privilege constraints:
-- The reader role stays read-only on util.app_run_logs.
-- The summary table is the ONLY thing this app writes, and only in its own schema.
-- The writer must never touch util.* or any pipeline table.
+- Stays fully read-only: ops_dashboard_ro, SELECT only, no new write surface.
+- No new roles, no DDL.
 
 Schema assumptions to confirm live (before coding):
-- Identify the admin/migration role that will apply the DDL (NOT ops_dashboard_ro)
-  and confirm the writer role can be scoped to the owned summary schema only.
-- Confirm the watermark approach handles late-arriving rows (inserted_at default
-  now() - are there out-of-order inserts? backfill?).
-- Re-confirm json field paths used for status/job/duration still hold.
+- Re-confirm the json field paths used for status/job/duration still hold.
+- Confirm inserted_at ordering vs commit order well enough that a 5-min overlap is
+  safe (check for out-of-order / late inserts); widen overlap if needed.
+- Sanity-check the bootstrap cost at the chosen retention window (row count + blob
+  volume over 30 days) so cold start stays tolerable.
 
 Review questions:
-- Is each row parsed exactly once, and is the watermark crash-safe (no gaps/dupes)?
-- Does the writer have the minimum privileges, scoped to the ops schema only?
+- Is the incremental merge truly idempotent (reprocessing a row changes nothing)?
+- Does a dormant job stay visible (stale), and do ancient ghosts age out?
+- Is the watermark advanced only after a tick fully succeeds (no gaps on error)?
 - Is the grid response shape unchanged for the frontend?
-- What happens on first run / empty summary table (cold start)?
-- Is the refresh trigger documented and consistent with suite conventions?
+- Is cold-start behavior correct and bounded (warming state, retention window)?
+- Did the old full-rescan snapshot get fully removed (no dead code/timers)?

@@ -20,7 +20,12 @@ direction is to **harden and future-proof** it:
 Current decisions:
 
 - the app connects as the least-privilege role `ops_dashboard_ro`, never a superuser
-- the grid is served from a background-refreshed in-memory snapshot (2-min default)
+- the grid is served from a background-refreshed in-memory snapshot (2-min default);
+  Phase 4 replaces this with an in-process incremental cache
+- **Phase 4 approach = Option B (in-process incremental cache), not a DB summary
+  table.** Stays fully read-only; the DB-table variant (Option A) is deferred unless
+  durability/multi-instance is ever needed. The grid will show last-run-per-(app,job)
+  so dormant jobs stay visible (stale) instead of being hidden by a lookback window.
 - the dashboard is deployed host-internal with no auth, by decision
 - only 4 apps currently write to the DB (`data_acquisition`, `hhm_rpp_philips`,
   `hhm_rpp_ge`, `hhm_rpp_siemens`); others appear automatically when they start logging
@@ -28,7 +33,7 @@ Current decisions:
 Not decided yet:
 
 - whether to add auth (only if exposure changes from host-internal)
-- whether the summary table lives in a new schema we own vs. computed in-process
+- whether to ever promote the in-process cache to a durable DB summary table (Option A)
 - retention/rotation strategy for `/opt/run-logs` (a stretch view, not core)
 
 These are decided in future phases, not hidden inside unrelated edits.
@@ -43,7 +48,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 1 | — (predates prompt system) | Completed | v1 slice: confirmed live schema, scaffolded grid/errors/drill-down. See PHASE_LOG. |
 | 2 | — (predates prompt system) | Completed | Background-refreshed grid snapshot (perf). See PHASE_LOG. |
 | 3 | — (predates prompt system) | Completed | Code-review hardening: RO role, uuid validation, SSL fail-closed, tests. See PHASE_LOG. |
-| 4 | `prompt_4_summary_table.txt` | Planned | Incremental summary table; retire the ~28s background grid query. |
+| 4 | `prompt_4_summary_table.txt` | Planned | In-process incremental cache (Option B); retire the ~28s background grid query. |
 | 5 | `prompt_5_run_drilldown_ui.txt` | Planned | Run drill-down UI over the existing `/api/runs/:run_id`. |
 | 6 | `prompt_6_real_schedules.txt` | Planned | Replace placeholder cadences with real cron values; trustworthy staleness. |
 | 7 | `prompt_7_self_monitoring.txt` | Planned | Optional self-logging under `app_name = "ops-dashboard"`. |
@@ -59,7 +64,7 @@ One branch per phase unless the developer explicitly chooses otherwise.
 
 | Phase | Branch |
 | ----- | ------ |
-| 4 | `phase-4-summary-table` |
+| 4 | `phase-4-incremental-cache` |
 | 5 | `phase-5-run-drilldown-ui` |
 | 6 | `phase-6-real-schedules` |
 | 7 | `phase-7-self-monitoring` |
