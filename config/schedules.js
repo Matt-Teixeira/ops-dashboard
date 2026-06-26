@@ -21,12 +21,15 @@ module.exports = {
   // Aggregate of many staggered data_acquisition sub-jobs (ge_*, philips_*,
   // siemens_*, ip, offline_alert, schedule_0..7 at 00,30 / 10,40 / 15,45 / 16,46 /
   // 17,47 / 19,49 / 20,50 / 22,52 ... -- cron-jobs.txt "HHM DATA ACQUISITION" +
-  // "MMB DATA ACQUISITION"). It runs almost constantly: observed median gap 0.4 min,
-  // p90 2.8 min (app_run_logs, 2026-06-26). everyMin here is NOT a literal schedule;
-  // it's the silence budget that flags a full-pipeline STALL. 10 min (~3.5x p90)
-  // catches a real stop without flapping on normal staggered idle. Per-system_id
-  // staleness is out of scope -- this is one (default) bucket.
-  "data_acquisition/(default)": { everyMin: 5, graceMin: 5 },
+  // "MMB DATA ACQUISITION"). It runs almost constantly, but the staggered schedule
+  // has real idle gaps: observed median 0.4 / p90 2.8 / p99 10.1 / MAX 12.3 min
+  // (app_run_logs, 7d, 2026-06-26; notes/schedule-cadence-probe.sql).
+  // everyMin here is NOT a literal schedule; it's the silence budget that flags a
+  // full-pipeline STALL. The budget must clear the MAX normal gap (12.3 min), not
+  // p90, or it flaps STALE during ordinary operation. 30 min total (~2.4x max)
+  // flags a genuine stop without false positives. Per-system_id staleness is out of
+  // scope -- this is one (default) bucket.
+  "data_acquisition/(default)": { everyMin: 20, graceMin: 10 },
 
   // hhm_rpp_ge: cron-jobs.txt "HHM RPP" block, 18,48 * * * * (cd hhm_rpp_ge &&
   // npm run ge_ct|ge_cv|ge_mri) -> every 30 min. Observed median 30.0 min

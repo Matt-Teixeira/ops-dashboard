@@ -47,16 +47,17 @@ test("SIEMENS_CV stays unknown (null), never asserted fresh", () => {
   assert.equal(r.budgetMs, null);
 });
 
-// Phase 6: data_acquisition/(default) is the stall budget (everyMin 5 + grace 5 = 10m).
-test("data_acquisition (default) within the 10-min stall budget -> not stale", () => {
-  const lastRun = new Date(NOW.getTime() - 6 * 60 * 1000).toISOString(); // 6m < 10m
+// Phase 6: data_acquisition/(default) is a STALL budget (everyMin 20 + grace 10 =
+// 30m), set above the max normal inter-run gap (12.3m observed) so it never flaps.
+test("data_acquisition (default) within the 30-min stall budget -> not stale", () => {
+  const lastRun = new Date(NOW.getTime() - 13 * 60 * 1000).toISOString(); // 13m (> max normal gap) < 30m
   const r = evaluate("data_acquisition", "(default)", lastRun, NOW);
   assert.equal(r.stale, false);
-  assert.equal(r.budgetMs, 10 * 60 * 1000);
+  assert.equal(r.budgetMs, 30 * 60 * 1000);
 });
 
-test("data_acquisition (default) past the 10-min stall budget -> stale", () => {
-  const lastRun = new Date(NOW.getTime() - 12 * 60 * 1000).toISOString(); // 12m > 10m
+test("data_acquisition (default) past the 30-min stall budget -> stale", () => {
+  const lastRun = new Date(NOW.getTime() - 35 * 60 * 1000).toISOString(); // 35m > 30m
   const r = evaluate("data_acquisition", "(default)", lastRun, NOW);
   assert.equal(r.stale, true);
 });

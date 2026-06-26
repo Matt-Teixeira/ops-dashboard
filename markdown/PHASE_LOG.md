@@ -138,14 +138,20 @@ Source:
 - Self-review against `markdown/REVIEW_CHECKLIST.md` (walked: scope/non-goals held;
   read-only + RO role intact; no new query; additive response shape; secrets clean;
   validation recorded).
+- Pre-handoff diff review (this session) caught one issue, fixed before the external
+  pass; handoff is `notes/review_handoff_phase_6.md`.
 
 Critical issues:
 
 - None.
 
-Accepted fixes:
+Accepted fixes (follow-up commit):
 
-- None (no external review this phase).
+- (medium) `data_acquisition/(default)` stall budget was `{everyMin:5, graceMin:5}`
+  = 10 min, sized on p90 (2.8 min). Re-measuring the gap distribution showed p99
+  10.1 / MAX 12.3 min over 7 days, so the aggregate bucket would intermittently flap
+  a false STALE. Raised to `{everyMin:20, graceMin:10}` = 30 min (~2.4x max), comment
+  corrected to justify against the max gap, tests updated. 26/26.
 
 Deferred findings:
 
