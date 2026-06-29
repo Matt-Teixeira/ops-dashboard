@@ -128,15 +128,19 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_15.md`.
+- External (Codex) on `notes/review_handoff_phase_15.md` (source-level + unit suite;
+  live EXPLAIN not re-run — the live smoke is already recorded above). `node --test` 91/91.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: the `stats` grant is fail-closed and verifies effective
+  privileges; `ACQ_SYSTEMS_SQL` is `inserted_at`-bounded, reads only
+  `stats.acquisition_history`, no join, no `verbose_log`; the endpoint uses the shared
+  sanitized error handler; the UI renders via text nodes with `runReq` guarding.
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
