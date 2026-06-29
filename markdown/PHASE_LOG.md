@@ -14,13 +14,13 @@ Date:
 2026-06-29
 
 Status:
-Completed (code); live deploy needs the alert grant applied (see Validation)
+Completed (grant applied; live smoke passed 2026-06-29)
 
 Prompt:
 `prompts/prompt_10_connectivity_panel.txt`
 
 Git Commit:
-Pending
+469184b (impl) · cdbe51f (review fix)
 
 Review Artifacts:
 
@@ -118,13 +118,22 @@ Results:
 - Passed: 72/72 unit tests (61 prior + 11 connectivity); all changed server files
   parse; modules load in the running container.
 - Failed: none.
-- Not run: **live `/api/connectivity` smoke** — blocked on the `alert` grant being
-  applied by a superuser and a container restart (the documented two-step deploy).
-  Confirmed the pre-grant state (RO denied) so the grant is demonstrably required.
+- Not run: none.
+
+Live deploy + smoke (2026-06-29, after the operator applied the grant as the
+`postgres` superuser and `docker compose restart`):
+
+- Grant landed: `ops_dashboard_ro` now reads `alert.offline_hhm_conn` (284 rows) and
+  `alert.offline_mmb_conn` (255 rows) — previously `permission denied for schema alert`.
+- `GET /api/connectivity` → 200 in ~70ms; `count: 539` (284 + 255), `systems` sorted
+  worst-first (verified: all OFFLINE before UNKNOWN before ONLINE) and most-stale
+  first within OFFLINE (top capture from 2024-04). Status tally: 142 OFFLINE / 123
+  UNKNOWN / 274 ONLINE.
+- No regression: `/healthz`, `/api/jobs/latest`, `/api/errors` all still 200.
 
 Manual / smoke tests:
 
-- Confirmed `ops_dashboard_ro` is denied on both `alert.*` tables today.
+- Confirmed `ops_dashboard_ro` was denied on both `alert.*` tables BEFORE the grant.
 - Inline `index.html` script passes `node --check`.
 
 ## Review Notes
@@ -160,8 +169,8 @@ Deferred findings:
 
 ## Follow-Up Tasks
 
-- Apply the `alert` grant (superuser) + restart, then run the live `/api/connectivity`
-  smoke and record it.
+- Done: `alert` grant applied (superuser) + restart + live `/api/connectivity` smoke
+  (recorded above, 2026-06-29).
 - Deferred: grid connectivity rollup badge on the `data_acquisition` row; per-run
   correlation via `stats.acquisition_history`.
 
@@ -172,8 +181,8 @@ Deferred findings:
 - Time-windowed queries partition-pruned: n/a (alert tables unpartitioned; justified).
 - Schema assumptions confirmed live: yes (shape + the RO-denied precondition).
 - Review findings addressed or deferred: handoff written; external review pending.
-- Validation recorded: yes (72/72 + parse/load); live smoke pending the grant deploy.
-- Ready to commit: yes (live smoke to follow at deploy).
+- Validation recorded: yes (72/72 + parse/load + live smoke passed post-grant).
+- Ready to commit: yes (shipped; grant applied and smoke green 2026-06-29).
 
 ---
 
