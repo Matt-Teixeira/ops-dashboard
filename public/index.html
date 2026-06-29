@@ -103,6 +103,9 @@
   <!-- Connectivity view: latest per-equipment connectivity. Populated by showConnectivity(). -->
   <section id="connectivity-view" hidden></section>
 
+  <!-- Per-app run-log view: every run for one app in a window. Populated by showAppRuns(). -->
+  <section id="appruns-view" hidden></section>
+
   <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
   <script src="grid-view.js"></script>
   <script>
@@ -235,6 +238,18 @@
       b.className = "badge " + status;
       b.textContent = status;
       td.appendChild(b);
+      // When grouped by app, the group key IS an app name: offer its full run log.
+      // stopPropagation so the link navigates instead of toggling the collapse.
+      if (gridView.groupBy === "app") {
+        const log = document.createElement("a");
+        log.href = "#appruns=" + encodeURIComponent(group.key);
+        log.textContent = "run log ›";
+        log.className = "muted";
+        log.style.marginLeft = ".6rem";
+        log.style.fontWeight = "400";
+        log.addEventListener("click", (ev) => ev.stopPropagation());
+        td.appendChild(log);
+      }
       tr.appendChild(td);
       const toggle = () => {
         if (gridView.collapsed.has(group.key)) gridView.collapsed.delete(group.key);
@@ -567,6 +582,7 @@
       const myReq = ++runReq;
       document.getElementById("dashboard").hidden = true;
       document.getElementById("connectivity-view").hidden = true;
+      document.getElementById("appruns-view").hidden = true;
       const view = document.getElementById("run-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -590,11 +606,137 @@
     }
 
     function showDashboard() {
-      runReq++; // invalidate any in-flight run/connectivity fetch so it can't render after we leave
+      runReq++; // invalidate any in-flight run/connectivity/run-log fetch so it can't render after we leave
       document.getElementById("run-view").hidden = true;
       document.getElementById("connectivity-view").hidden = true;
+      document.getElementById("appruns-view").hidden = true;
       document.getElementById("dashboard").hidden = false;
       if (!dashboardLoaded) refresh();
+    }
+
+    // --- per-app run-log view (Phase 11) -------------------------------------
+    // Every run for one app within the window, newest first, keyset-paginated.
+    // Fetched on demand (not from the grid cache); each run links to its drill-down.
+
+    const CONN_STATUS_CLASS = { ERROR: "ERROR", WARN: "WARN", SUCCESS: "SUCCESS" };
+    let appRunsState = null; // { app, req, runs:[], nextBefore, nextBeforeId, loading }
+
+    function appRunsUrl(app, before, beforeId) {
+      let u = "/api/apps/" + encodeURIComponent(app) + "/runs";
+      if (before && beforeId) u += "?before=" + encodeURIComponent(before) + "&beforeId=" + encodeURIComponent(beforeId);
+      return u;
+    }
+
+    function renderAppRuns() {
+      const view = document.getElementById("appruns-view");
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const st = appRunsState;
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "Run log — " + st.app;
+      view.appendChild(h2);
+
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      const more = st.nextBefore ? " (more available)" : "";
+      sub.textContent = `· ${st.runs.length} runs loaded${more}`;
+      view.appendChild(sub);
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["When", "Status", "Issues", "Run id"]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const r of st.runs) {
+        const tr = document.createElement("tr");
+        if (r.status === "ERROR" || r.status === "WARN") tr.className = "row-" + r.status;
+        tr.appendChild(cell(fmtTime(r.insertedAt)));
+        const stc = cell("");
+        const b = document.createElement("span");
+        b.className = "badge " + (CONN_STATUS_CLASS[r.status] || "INFO");
+        b.textContent = r.status;
+        stc.appendChild(b);
+        tr.appendChild(stc);
+        tr.appendChild(cell(r.issueCount, "num"));
+        const idCell = document.createElement("td");
+        const link = document.createElement("a");
+        link.href = runHref(r.runId, r.insertedAt); // drill-down with the inserted_at hint
+        link.textContent = r.runId;
+        idCell.appendChild(link);
+        tr.appendChild(idCell);
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+
+      if (!st.runs.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No runs in the window.";
+        view.appendChild(p);
+      }
+
+      if (st.nextBefore) {
+        const btn = document.createElement("button");
+        btn.textContent = st.loading ? "loading…" : "load more";
+        btn.disabled = st.loading;
+        btn.style.marginTop = ".8rem";
+        btn.addEventListener("click", loadMoreAppRuns);
+        view.appendChild(btn);
+      }
+    }
+
+    async function fetchAppRunsPage(before, beforeId) {
+      const st = appRunsState;
+      const res = await fetch(appRunsUrl(st.app, before, beforeId));
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }
+
+    async function showAppRuns(app) {
+      const myReq = ++runReq;
+      document.getElementById("dashboard").hidden = true;
+      document.getElementById("run-view").hidden = true;
+      document.getElementById("connectivity-view").hidden = true;
+      const view = document.getElementById("appruns-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      appRunsState = { app, req: myReq, runs: [], nextBefore: null, nextBeforeId: null, loading: true };
+      connMessage(view, "Loading run log…");
+      let data;
+      try { data = await fetchAppRunsPage(null, null); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load the run log."); return; }
+      if (myReq !== runReq) return; // navigated away
+      appRunsState.runs = data.runs;
+      appRunsState.nextBefore = data.nextBefore;
+      appRunsState.nextBeforeId = data.nextBeforeId;
+      appRunsState.loading = false;
+      renderAppRuns();
+    }
+
+    async function loadMoreAppRuns() {
+      const st = appRunsState;
+      if (!st || st.loading || !st.nextBefore) return;
+      const myReq = st.req;
+      st.loading = true;
+      renderAppRuns(); // reflect the "loading…" button state
+      let data;
+      try { data = await fetchAppRunsPage(st.nextBefore, st.nextBeforeId); }
+      catch { st.loading = false; if (myReq === runReq) renderAppRuns(); return; }
+      if (myReq !== runReq) return; // navigated away mid-fetch
+      st.runs = st.runs.concat(data.runs);
+      st.nextBefore = data.nextBefore;
+      st.nextBeforeId = data.nextBeforeId;
+      st.loading = false;
+      renderAppRuns();
     }
 
     // --- connectivity view (Phase 10) ----------------------------------------
@@ -682,6 +824,7 @@
       const myReq = ++runReq; // share the navigation token so a stale fetch can't render
       document.getElementById("dashboard").hidden = true;
       document.getElementById("run-view").hidden = true;
+      document.getElementById("appruns-view").hidden = true;
       const view = document.getElementById("connectivity-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -707,6 +850,8 @@
         showRun(p.get("run"), p.get("at"));
       } else if (hash === "connectivity") {
         showConnectivity();
+      } else if (hash.startsWith("appruns=")) {
+        showAppRuns(decodeURIComponent(hash.slice("appruns=".length)));
       } else {
         showDashboard();
       }

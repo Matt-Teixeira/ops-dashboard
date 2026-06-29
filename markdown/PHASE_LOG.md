@@ -8,6 +8,163 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 11 — Per-App Run History
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_11_app_run_history.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_11.md`
+
+## Goals
+
+- Make high-frequency, single-bucket apps inspectable: an on-demand, paginated
+  per-app run-log (every run_id in a window, default 24h) so `data_acquisition` —
+  which the grid collapses to one arbitrary `(default)` run — can be seen in full.
+
+## Built
+
+- `db/queries.js`: `APP_RUNS_SQL` + `appRuns()`. Lean — status/issue_count from
+  `warn_error_logs` only (no `verbose_log` detoast); `inserted_at` emitted as a
+  full-microsecond ISO string (`to_char(... 'US' ...)`). Filters `app_name=$1` and
+  `inserted_at>$2` (partition prune); keyset `(inserted_at, run_id) < ($3,$4)`;
+  `ORDER BY inserted_at DESC, run_id DESC LIMIT $5`.
+- `lib/app-runs.js` (server-only, pure): `clampInt` (blank/absent -> default; note
+  `Number("")===0`) and `shapePage` (row mapping + next keyset cursor).
+- `server.js`: `GET /api/apps/:app/runs?windowHours&limit&before&beforeId` ->
+  `{app, windowHours, count, runs[], nextBefore, nextBeforeId}`. Window clamped
+  1..720h, limit 1..500; cursor validated; errors via the shared sanitized handler.
+- `public/index.html`: routed `#appruns=<app>` view reached from the Phase 8 app
+  group-head ("run log ›"); "load more" via the keyset cursor; each run links to the
+  drill-down with the `inserted_at` hint; text via `textContent`; `runReq` guard.
+- `test/app-runs.test.js`: +8 (clamp, shapePage, DB-free `APP_RUNS_SQL` shape guard).
+  80 total. Config: `APP_RUNS_LOOKBACK_HOURS` (24), `APP_RUNS_LIMIT` (200) in
+  `.env.example` + `markdown/ENVIRONMENT.md`.
+
+## Schema Facts Confirmed (live DB)
+
+- `EXPLAIN` (as ops_dashboard_ro): single-partition **Index Scan** on
+  `app_run_logs_2026_06_inserted_at_idx` with `Index Cond: inserted_at > …` and an
+  `app_name` filter — partition pruned, no full scan, no `verbose_log` touched.
+- Per-app 24h volume (sizes the default cap): data_acquisition 1104, hhm_rpp_philips
+  816, ops-dashboard 288, hhm_rpp_ge 144.
+- `warn_error_logs` ERROR>WARN>SUCCESS status matches `JOBS_LATEST_SQL`.
+
+## Important Decisions
+
+### Full-microsecond cursor, keyset (not OFFSET)
+
+Decision: `inserted_at` is emitted as a 6-digit-fractional ISO string and the cursor
+is `(inserted_at, run_id)`; "load more" passes the last row's pair back as
+`before`/`beforeId`.
+
+Reason: data_acquisition fires sub-second, so multiple runs share a millisecond. A JS
+`Date` cursor truncates to ms and would silently DROP rows between the truncated and
+true value; OFFSET would shift as new runs arrive at the top. Keyset on the exact
+(µs, run_id) is gap/dup-free and stable. Verified live across a page boundary.
+
+### Direct query, not cached
+
+Decision: served by a direct partition-pruned query, not the in-process cache.
+
+Reason: the cache holds one row per (app, job) by design; run history is unbounded.
+The query is cheap (single-partition index scan, warn_error_logs only), so a bounded
+(window + limit) request-path query is the right tool.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: new read-only query; **no new grant** (role
+  already has SELECT on util.app_run_logs); no writes/DDL.
+- Query / partition-pruning impact: `inserted_at > $2` prunes to the month
+  partition(s) (EXPLAIN-confirmed); never reads `verbose_log`.
+- Performance (request-path latency) impact: single-partition index scan, sub-second;
+  off the grid-cache path; bounded by window + limit.
+- Security impact: `:app` parameterized ($1); window/limit clamped; cursor validated
+  (bad uuid -> 400); shared sanitized 500; view renders via `textContent`.
+- Deployment impact: needs a `docker compose restart` to load the new route (done);
+  two new optional env vars with safe defaults; no grant/schema change.
+- API / response-shape compatibility impact: additive (`/api/apps/:app/runs` is new).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test           # 80/80
+# live (running container, after docker compose restart):
+EXPLAIN APP_RUNS_SQL                                              # single-partition index scan
+curl /api/apps/data_acquisition/runs?limit=5                     # page 1
+curl /api/apps/data_acquisition/runs?...&before=…&beforeId=…     # page 2 (keyset)
+```
+
+Results:
+
+- Passed: 80/80 unit tests (72 prior + 8 new).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- Page 1 newest-first with full-µs cursor; page 2 via cursor continued strictly older
+  (14:48:06.9 < 14:48:10.4) with no dupes/gaps across sub-second runs.
+- EXPLAIN: pruned to `app_run_logs_2026_06`, index scan on inserted_at, no verbose_log.
+- A run-log row drilled down (data_acquisition/(default), 261 events) via the hint.
+- Bad `beforeId` -> 400; grid / errors / connectivity / `/healthz` all still 200.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_11.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet (one self-caught during dev: `clampInt("")` must be the default since
+  `Number("")===0`; handled + tested).
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- Problem: a JS `Date` cursor truncates `inserted_at` to ms and would drop sub-second
+  runs at the page boundary.
+  Resolution: emit `inserted_at` as a full-microsecond ISO string from SQL and keyset
+  on `(inserted_at, run_id)`; verified gap/dup-free across a boundary.
+
+## Follow-Up Tasks
+
+- Optional (deferred, called out in the prompt): per-run duration/job (would detoast
+  verbose_log); a server-side "errors only" filter (high value for data_acquisition,
+  ~87% of runs error); per-(app, job) history.
+
+## Commit Readiness
+
+- Requirements implemented: yes (lean query, keyset pagination, endpoint, view, tests).
+- Read-only / least-privilege rules hold: yes (no new grant; read-only).
+- Time-windowed queries partition-pruned: yes (EXPLAIN-confirmed).
+- Schema assumptions confirmed live: yes (plan, volume, status parity).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (80/80 + EXPLAIN + live pagination/drill-down/regression).
+- Ready to commit: yes.
+
+---
+
 # Phase 10 — Connectivity Panel
 
 Date:

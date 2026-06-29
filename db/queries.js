@@ -120,12 +120,47 @@ SELECT 'MMB' AS source, system_id, capture_datetime, inserted_at,
 FROM alert.offline_mmb_conn;
 `;
 
+// Per-app run history (Phase 11): every run for one app within a recent window,
+// newest first, for the on-demand run-log view. Lean by design -- status and
+// issue_count come ONLY from warn_error_logs (small, pre-filtered); verbose_log is
+// never touched, so no detoast even for high-frequency apps (data_acquisition runs
+// ~1100x/24h). Partition-pruned via `inserted_at > $2`. NOT cached: the in-process
+// cache holds one row per (app, job); run history is served directly.
+//
+// Pagination is KEYSET on (inserted_at, run_id) DESC, not OFFSET, so a new run
+// arriving at the top can't shift pages and runs sharing an inserted_at (sub-second
+// fan-out) are neither skipped nor duplicated. The cursor ($3 ts, $4 run_id) is the
+// previous page's last row; the first page passes NULLs. inserted_at is returned as
+// a full-microsecond ISO string (inserted_at_iso) so the cursor round-trips exactly
+// (a JS Date would truncate to ms and drop rows at the boundary).
+const APP_RUNS_SQL = `
+SELECT
+  run_id,
+  to_char(inserted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS inserted_at_iso,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR') THEN 'ERROR'
+    WHEN EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'WARN')  THEN 'WARN'
+    ELSE 'SUCCESS'
+  END AS status,
+  json_array_length(COALESCE(warn_error_logs, '[]'::json)) AS issue_count
+FROM util.app_run_logs
+WHERE app_name = $1
+  AND inserted_at > $2::timestamptz
+  AND ($3::timestamptz IS NULL OR (inserted_at, run_id) < ($3::timestamptz, $4::uuid))
+ORDER BY inserted_at DESC, run_id DESC
+LIMIT $5;
+`;
+
 function jobsLatestSince(sinceIso) {
   return db.any(JOBS_LATEST_SQL, [sinceIso]);
 }
 
 function connectivity() {
   return db.any(CONNECTIVITY_SQL);
+}
+
+function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null) {
+  return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit]);
 }
 
 function recentErrors(lookbackDays = 2, limit = 100) {
@@ -143,4 +178,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, ping };

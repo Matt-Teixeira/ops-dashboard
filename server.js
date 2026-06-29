@@ -9,9 +9,12 @@ const queries = require("./db/queries");
 const runs = require("./lib/runs");
 const staleness = require("./lib/staleness");
 const connectivity = require("./lib/connectivity");
+const appRunsLib = require("./lib/app-runs");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
+const APP_RUNS_LOOKBACK_HOURS = Number(process.env.APP_RUNS_LOOKBACK_HOURS || 24);
+const APP_RUNS_LIMIT = Number(process.env.APP_RUNS_LIMIT || 200);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
@@ -185,6 +188,38 @@ function buildApp() {
         durationMs,
         events: row.verbose_log,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-app run history: every run for one app within a window (default 24h),
+  // newest first, paginated by a keyset cursor. Lean -- status/issue_count from
+  // warn_error_logs only, no verbose_log detoast -- and partition-pruned on
+  // inserted_at, served directly (not from the grid cache). Each run links to the
+  // drill-down with the inserted_at hint. See lib/app-runs.js for the pure shaping.
+  app.get("/api/apps/:app/runs", async (req, res, next) => {
+    const appName = req.params.app; // express decodes %xx
+    const windowHours = appRunsLib.clampInt(req.query.windowHours, APP_RUNS_LOOKBACK_HOURS, 1, 720);
+    const limit = appRunsLib.clampInt(req.query.limit, APP_RUNS_LIMIT, 1, 500);
+    // Optional keyset cursor (the previous page's last row). Validate both parts
+    // the same way the drill-down validates its id/timestamp hints.
+    const before = req.query.before;
+    const beforeId = req.query.beforeId;
+    if (before != null && Number.isNaN(Date.parse(before))) {
+      return res.status(400).json({ error: "invalid before (expected an ISO timestamp)" });
+    }
+    if (beforeId != null && !UUID_RE.test(beforeId)) {
+      return res.status(400).json({ error: "invalid beforeId (expected a uuid)" });
+    }
+    // A cursor needs both halves to be well-defined; if only one is present, ignore it.
+    const cursorTs = before && beforeId ? before : null;
+    const cursorId = before && beforeId ? beforeId : null;
+    try {
+      const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+      const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId);
+      const page = appRunsLib.shapePage(rows, limit);
+      res.json({ app: appName, windowHours, count: page.runs.length, ...page });
     } catch (err) {
       next(err);
     }
