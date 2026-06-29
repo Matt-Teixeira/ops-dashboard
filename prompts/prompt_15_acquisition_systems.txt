@@ -1,0 +1,107 @@
+Phase 15 - Per-System Acquisition History
+
+Goal:
+Give data_acquisition the per-system / per-source view its one orchestrator grid row
+can't show. A single data_acquisition run covers ~20 systems (no per-job argv), so the
+grid collapses it to one "(default)" row. Add a dedicated, read-only view that breaks
+data_acquisition's recent acquisitions down BY SYSTEM (with a per-source hhm/mmb
+rollup), from the purpose-built history table, so an operator can see which equipment
+has been failing over a window.
+
+Background (verified live this session - do not re-discover):
+- Source is `stats.acquisition_history` (~447k rows, NOT partitioned). One row per
+  (run, system): columns include `run_id` (uuid; joins util.app_run_logs.run_id),
+  `system_id` (varchar8, always present), `data_source` (hhm|mmb, always present),
+  `modality`/`manufacturer` (sparse: ~82% blank -- only hhm carries CT/MRI/CV),
+  `successful_acquisition` (bool), `connection_error`/`error_category`/`phase`,
+  `inserted_at` (timestamptz default now()). It is data_acquisition's own history (the
+  alert.* tables Phase 10 reads are the current-state snapshot of this same data).
+- Indexes: PK(id); btree (system_id, inserted_at DESC); btree run_id; BRIN(inserted_at)
+  + an (error_category, inserted_at DESC) partial. There is no partitioning, but a
+  windowed aggregate is bounded by the BRIN: EXPLAIN of a 24h per-(system,source)
+  GROUP BY uses `Bitmap Index Scan on idx_acq_hist_inserted_brin`, not a full scan.
+- 24h volume: ~18k rows, 333 systems, ~7k failed (~39%). modality blank ~82% -> per
+  SYSTEM is the clean axis; data_source (hhm/mmb) is the reliable coarse rollup.
+- This is the dashboard's THIRD read outside util (after Phase 10's alert grant). The
+  RO role needs SELECT on stats.acquisition_history; apply it fail-closed like Phase 10.
+- Reuse: the routed-view + show/hide + runReq guard pattern (connectivity/run-log),
+  fmtAge/fmtTime/cell, badge CSS; the Phase 10 setup-readonly-role.sql REVOKE+GRANT+
+  verify block as the template for the stats grant.
+
+Scope:
+- Grant in db/setup-readonly-role.sql: add `USAGE ON SCHEMA stats` + `SELECT ON
+  stats.acquisition_history` to ops_dashboard_ro, with the SAME fail-closed pattern as
+  the alert grant (REVOKE ALL on the schema + its tables first, then GRANT, then a DO
+  block that RAISEs if any privilege other than SELECT-on-acquisition_history -- or
+  CREATE on the schema -- is effective). Idempotent; operator-run by a superuser before
+  the code deploys, else the endpoint 500s. Update DEPLOYMENT.md + ARCHITECTURE_PRINCIPLES
+  (grant list + a note that this is the third read surface).
+- Query in db/queries.js: ACQ_SYSTEMS_SQL + acquisitionSystems(sinceIso). Per
+  (system_id, data_source) over the window: `runs` = count(*), `failed` = count(*)
+  FILTER (WHERE NOT successful_acquisition), `modality`/`manufacturer` = max(...)
+  (sparse -> a non-null when present), `last_seen` = max(inserted_at) as a full ISO
+  string. `WHERE inserted_at > $1::timestamptz` (BRIN-bounded). GROUP BY
+  system_id, data_source. ORDER BY failed DESC, runs DESC, system_id (worst-first).
+  No verbose_log, no join (the table is self-contained).
+- lib/acq.js (server-only, pure; mirrors lib/connectivity.js): `shapeSystems(rows)`
+  (snake_case -> camelCase) and `summarizeBySource(rows)` -> per-source
+  { hhm:{systems,runs,failed}, mmb:{...} } rollup, both pure + unit-tested.
+- server.js: GET /api/acquisition/systems?windowHours=<n> (clamp via the existing
+  app-runs clampInt, default env ACQ_WINDOW_HOURS=24, 1..720) ->
+  { windowHours, asOf, count, bySource, systems }. Thin handler; errors via the shared
+  sanitized handler (missing grant -> generic 500).
+- public/index.html: a routed view (e.g. #acq-systems) reached from the
+  data_acquisition app group header ("systems ›", alongside "run log ›"; stopPropagation
+  so it navigates not collapses). Render a per-source rollup line (hhm/mmb: failed/runs,
+  systems) then a per-system table: System, Source, Modality, Manufacturer, Runs,
+  Failed, Last seen. Worst-first (already ordered); rows with failed>0 get the
+  .row-ERROR tint. Text via textContent; reuse the runReq guard + show/hide. ~333 rows
+  render at once (like connectivity's 539) -- no pagination this phase.
+- Config: ACQ_WINDOW_HOURS in .env.example + markdown/ENVIRONMENT.md.
+
+Non-goals:
+- No per-run/per-system drill-down join to util.app_run_logs (run_id is available for a
+  future link, but not built here); no pagination (bounded by system count).
+- modality is NOT the primary axis (too sparse) -- it's a column; data_source is the
+  rollup axis.
+- No writes; no change to the grid/cache, the connectivity panel, or the run-log.
+- No new index on stats.acquisition_history; no framework/build step.
+
+Expected files / layers:
+- db/setup-readonly-role.sql (stats grant, fail-closed), db/queries.js (ACQ_SYSTEMS_SQL
+  + acquisitionSystems), lib/acq.js (new, pure) + test/acq.test.js (new), server.js
+  (route + clamp), public/index.html (#acq-systems view + header link),
+  markdown/ARCHITECTURE_PRINCIPLES.md, markdown/DEPLOYMENT.md, .env.example,
+  markdown/ENVIRONMENT.md.
+
+Expected validation:
+- node --test for lib/acq (shapeSystems mapping; summarizeBySource counts per source;
+  empty/unknown-source tolerance) + an ACQ_SYSTEMS_SQL text guard (inserted_at filter,
+  GROUP BY system_id+data_source, FILTER on successful_acquisition, no verbose_log/join).
+- Grant smoke (operator/dev): SET ROLE ops_dashboard_ro; SELECT works on
+  stats.acquisition_history and a write is denied; the verify block passes.
+- Live EXPLAIN: the windowed aggregate uses the BRIN (or system/inserted index), not a
+  447k full scan. Live smoke: GET /api/acquisition/systems returns ~333 systems
+  worst-first with a hhm/mmb rollup (~39% failed in 24h); the data_acquisition header
+  "systems ›" opens the view; grid/connectivity/run-log/healthz unaffected.
+
+Read-only / least-privilege constraints:
+- Read-only. EXPANDS the RO role to a third schema (stats), SELECT on exactly
+  stats.acquisition_history, enforced + verified fail-closed in setup-readonly-role.sql.
+  No writes/DDL.
+
+Schema assumptions to confirm live (before coding):
+- Re-confirm the column set + that the windowed aggregate is BRIN/index-bounded (EXPLAIN),
+  and that the grant is applied (SELECT works as ops_dashboard_ro).
+- Confirm system_id/data_source are always present and modality is sparse (drives the
+  axis choice).
+
+Review questions:
+- Is the stats grant strictly SELECT on exactly stats.acquisition_history (no other
+  object), fail-closed/verified like the alert grant?
+- Is the windowed aggregate index/BRIN-bounded (no 447k full scan), warn-free of
+  verbose_log, and free of any join?
+- Are system_id (axis) and data_source (rollup) handled correctly, with modality only a
+  (sparse) column?
+- Is lib/acq pure and unit-tested; is the missing-grant failure a sanitized 500?
+- Are the grid, connectivity panel, run-log, and cache left untouched?

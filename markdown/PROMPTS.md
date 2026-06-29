@@ -47,8 +47,9 @@ Not decided yet:
 - whether to add auth (only if exposure changes from host-internal)
 - whether to ever promote the in-process cache to a durable DB summary table (Option A)
 - retention/rotation strategy for `/opt/run-logs` (a stretch view, not core)
-- whether to correlate connectivity to specific runs via `stats.acquisition_history`
-  (has `run_id`) — needs a third schema grant + a time-windowed join (deferred)
+- whether to add a per-run drill-down link from the acquisition-systems view into the
+  specific `util.app_run_logs` run (`stats.acquisition_history.run_id` is available;
+  Phase 15 reads the table but does not build the join/link)
 - per-(app, job) recent-run health on every grid row — deferred: deriving the job
   per run detoasts `verbose_log` (data_acquisition's is large); Phase 12 does the
   cheap per-APP aggregate instead
@@ -76,6 +77,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 12 | `prompt_12_grid_recent_health.txt` | Completed | Per-APP recent-run health (runs/errored/warned over ~24h) on the app group header, so the grid stops misrepresenting single-bucket apps like `data_acquisition`; cheap warn_error_logs-only aggregate (EXPLAIN-confirmed, no detoast) on the refresh timer, additive. See PHASE_LOG. |
 | 13 | `prompt_13_runlog_errors_filter.txt` | Completed | Server-side status filter (all/issues/errors) on the per-app run-log via a bound enum `$6` predicate, composing with keyset pagination; warn_error_logs-only. See PHASE_LOG. |
 | 14 | `prompt_14_connectivity_polish.txt` | Completed | Connectivity rollup badge on the `data_acquisition` grid header (offline HHM/MMB counts, links to `#connectivity`) from an additive `rollup` field on `/api/connectivity`; + a refresh button on the connectivity view. No new query/grant. See PHASE_LOG. |
+| 15 | `prompt_15_acquisition_systems.txt` | Pending | Per-system acquisition-history view for `data_acquisition` (per-`system_id` runs/failed over a window + per-source hhm/mmb rollup) from `stats.acquisition_history`; routed view off the data_acquisition header. Expands `ops_dashboard_ro` with SELECT on schema `stats` — the third read outside `util` (fail-closed, like Phase 10). |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -99,6 +101,7 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 12 | `phase-12-grid-recent-health` |
 | 13 | `phase-13-runlog-errors-filter` |
 | 14 | `phase-14-connectivity-polish` |
+| 15 | `phase-15-acquisition-systems` |
 
 Check `git status --short` before creating or switching branches.
 
