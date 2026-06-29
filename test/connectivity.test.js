@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { connStatus, captureAgeMs, checkedAgeMs, sortConnectivity, decorate, STATUS_RANK } = require("../lib/connectivity");
+const { connStatus, captureAgeMs, checkedAgeMs, sortConnectivity, decorate, rollup, STATUS_RANK } = require("../lib/connectivity");
 
 const NOW = new Date("2026-06-29T12:00:00Z");
 
@@ -96,4 +96,23 @@ test("decorate: tolerates empty input", () => {
 test("STATUS_RANK orders OFFLINE worst to ONLINE best", () => {
   assert.ok(STATUS_RANK.OFFLINE < STATUS_RANK.UNKNOWN);
   assert.ok(STATUS_RANK.UNKNOWN < STATUS_RANK.ONLINE);
+});
+
+// --- Phase 14: rollup --------------------------------------------------------
+
+test("rollup: per-source offline/total counts on decorated systems", () => {
+  const systems = [
+    { source: "HHM", status: "OFFLINE" },
+    { source: "HHM", status: "ONLINE" },
+    { source: "HHM", status: "UNKNOWN" },
+    { source: "MMB", status: "OFFLINE" },
+    { source: "MMB", status: "OFFLINE" },
+  ];
+  assert.deepEqual(rollup(systems), { hhm: { offline: 1, total: 3 }, mmb: { offline: 2, total: 2 } });
+});
+
+test("rollup: empty / unknown sources -> zeros, no throw", () => {
+  assert.deepEqual(rollup([]), { hhm: { offline: 0, total: 0 }, mmb: { offline: 0, total: 0 } });
+  assert.deepEqual(rollup(null), { hhm: { offline: 0, total: 0 }, mmb: { offline: 0, total: 0 } });
+  assert.deepEqual(rollup([{ source: "XXX", status: "OFFLINE" }]), { hhm: { offline: 0, total: 0 }, mmb: { offline: 0, total: 0 } });
 });

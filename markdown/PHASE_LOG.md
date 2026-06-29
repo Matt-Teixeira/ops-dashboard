@@ -8,6 +8,128 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 14 — Connectivity Polish
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_14_connectivity_polish.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_14.md`
+
+## Goals
+
+- Tie the connectivity panel into the grid (a rollup badge on the data_acquisition
+  row, linking to #connectivity) and add a refresh control to the connectivity view.
+  Additive, read-only, no new query.
+
+## Built
+
+- `lib/connectivity.js`: pure `rollup(systems)` -> `{hhm:{offline,total},
+  mmb:{offline,total}}`. `test/connectivity.test.js` +2 (86 total).
+- `server.js`: `/api/connectivity` now also returns `rollup` (from the same decorated
+  systems; no new query).
+- `public/index.html`: dashboard `refresh()` also calls a resilient `loadConnRollup()`
+  (failure keeps last-good, repaints the grid when counts arrive); the data_acquisition
+  app group header shows a "conn: HHM x / MMB y off" badge (ERROR-red if any offline)
+  linking to `#connectivity`; the connectivity view gets a refresh button.
+
+## Schema Facts Confirmed (live DB)
+
+- `/api/connectivity` rollup live: HHM 106/284 offline, MMB 33/255 offline (139 total).
+  Reuses the Phase 10 decorate/sort; no new DB work.
+
+## Important Decisions
+
+### Rollup is client-fed from the existing connectivity payload
+
+Decision: compute the rollup server-side as an additive field on `/api/connectivity`
+and render the grid badge from it client-side — no backend join, no grid/cache change.
+
+Reason: matches the Phase 9 "summary from the existing payload" precedent; keeps the
+grid path and cache untouched and the change small/revertible.
+
+Tradeoff: the dashboard makes one extra (cheap, ~70ms) connectivity fetch per refresh.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: read-only; no new grant/query.
+- Query / partition-pruning impact: none (reuses `/api/connectivity`).
+- Performance impact: one extra cheap fetch per dashboard refresh; resilient to failure.
+- Security impact: badge is an `<a>` with `stopPropagation`; text via DOM APIs.
+- Deployment impact: `docker compose restart` to load the server field (done); no
+  env/grant/schema change.
+- API / response-shape compatibility impact: additive (`rollup` on `/api/connectivity`).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 86/86
+curl /api/connectivity                                    # rollup present
+```
+
+Results:
+
+- Passed: 86/86 (84 prior + 2 new `rollup`).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- `/api/connectivity` carries `rollup` (HHM 106/284, MMB 33/255 offline); grid warms
+  to 200 with `appHealth` intact; regression on healthz/errors/run-log all 200.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_14.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Remaining deferred (PROMPTS "Not decided yet"): auth (if exposure changes), durable
+  DB summary table (at scale), `stats.acquisition_history` per-run correlation,
+  per-(app, job) recent health.
+
+## Commit Readiness
+
+- Requirements implemented: yes (rollup badge + connectivity refresh).
+- Read-only / least-privilege rules hold: yes (no new grant/query).
+- Time-windowed queries partition-pruned: n/a (no new query).
+- Schema assumptions confirmed live: yes (rollup counts).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (86/86 + live).
+- Ready to commit: yes.
+
+---
+
 # Phase 13 — Run-Log Status Filter
 
 Date:

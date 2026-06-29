@@ -75,7 +75,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 11 | `prompt_11_app_run_history.txt` | Completed | On-demand, paginated per-app run-log view (`GET /api/apps/:app/runs`, default 24h) so high-frequency single-bucket apps like `data_acquisition` are inspectable; lean warn_error_logs-only query (no `verbose_log` detoast, EXPLAIN-confirmed partition prune), full-µs keyset pagination, not cached. Reached from the grid's app group-head. See PHASE_LOG. |
 | 12 | `prompt_12_grid_recent_health.txt` | Completed | Per-APP recent-run health (runs/errored/warned over ~24h) on the app group header, so the grid stops misrepresenting single-bucket apps like `data_acquisition`; cheap warn_error_logs-only aggregate (EXPLAIN-confirmed, no detoast) on the refresh timer, additive. See PHASE_LOG. |
 | 13 | `prompt_13_runlog_errors_filter.txt` | Completed | Server-side status filter (all/issues/errors) on the per-app run-log via a bound enum `$6` predicate, composing with keyset pagination; warn_error_logs-only. See PHASE_LOG. |
-| 14 | `prompt_14_connectivity_polish.txt` | Pending | Client-side connectivity rollup badge on the `data_acquisition` grid row (links to `#connectivity`) + a refresh/as-of indicator on the connectivity view; no backend change. |
+| 14 | `prompt_14_connectivity_polish.txt` | Completed | Connectivity rollup badge on the `data_acquisition` grid header (offline HHM/MMB counts, links to `#connectivity`) from an additive `rollup` field on `/api/connectivity`; + a refresh button on the connectivity view. No new query/grant. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.

@@ -135,6 +135,7 @@
     // 120s), so auto-refresh polls no faster than that -- anything quicker is wasted.
     const AUTO_REFRESH_MS = 120000;
     let gridData = null; // last /api/jobs/latest payload
+    let connRollupData = null; // last /api/connectivity rollup { hhm:{offline,total}, mmb:{…} } (Phase 14)
     const gridView = loadGridView();
 
     function loadGridView() {
@@ -251,6 +252,22 @@
           hb.textContent = txt;
           td.appendChild(hb);
         }
+      }
+      // Connectivity rollup (Phase 14): offline equipment counts for data_acquisition
+      // (it owns the HHM/MMB sources), linking to the connectivity panel.
+      if (gridView.groupBy === "app" && group.key === "data_acquisition" && connRollupData) {
+        const h = connRollupData.hhm || { offline: 0 };
+        const m = connRollupData.mmb || { offline: 0 };
+        const off = (h.offline || 0) + (m.offline || 0);
+        const cb = document.createElement("a");
+        cb.href = "#connectivity";
+        cb.className = "badge " + (off > 0 ? "ERROR" : "SUCCESS");
+        cb.style.marginLeft = ".5rem";
+        cb.style.textDecoration = "none";
+        cb.title = "equipment connectivity — offline systems; click for the connectivity panel";
+        cb.textContent = "conn: HHM " + (h.offline || 0) + " / MMB " + (m.offline || 0) + " off";
+        cb.addEventListener("click", (ev) => ev.stopPropagation()); // navigate, don't toggle collapse
+        td.appendChild(cb);
       }
       // When grouped by app, the group key IS an app name: offer its full run log.
       // stopPropagation so the link navigates instead of toggling the collapse.
@@ -451,8 +468,20 @@
 
     let dashboardLoaded = false;
 
+    // Connectivity rollup for the grid badge (Phase 14): resilient -- a failure just
+    // leaves the last-good counts, never breaks the dashboard. Repaints the grid once
+    // counts arrive so the badge appears even though it loads alongside the grid.
+    async function loadConnRollup() {
+      try {
+        const res = await fetch("/api/connectivity");
+        const r = res.ok ? await res.json() : null;
+        connRollupData = r && r.rollup ? r.rollup : connRollupData;
+        if (gridData) renderGrid();
+      } catch { /* keep last-good */ }
+    }
+
     async function refresh() {
-      try { await Promise.all([loadGrid(), loadErrors()]); dashboardLoaded = true; }
+      try { await Promise.all([loadGrid(), loadErrors(), loadConnRollup()]); dashboardLoaded = true; }
       catch (err) { document.getElementById("meta").textContent = "· error: " + err.message; }
     }
 
@@ -798,7 +827,12 @@
 
       const sub = document.createElement("div");
       sub.className = "muted";
-      sub.textContent = `· ${systems.length} systems · ${offline} offline · as of ${fmtTime(data.asOf)}`;
+      sub.textContent = `· ${systems.length} systems · ${offline} offline · as of ${fmtTime(data.asOf)} `;
+      const rb = document.createElement("button");
+      rb.type = "button";
+      rb.textContent = "refresh";
+      rb.addEventListener("click", showConnectivity); // re-fetch + re-render (runReq-guarded)
+      sub.appendChild(rb);
       view.appendChild(sub);
 
       if (!systems.length) {

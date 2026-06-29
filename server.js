@@ -177,7 +177,7 @@ function buildApp() {
     try {
       const now = new Date();
       const systems = connectivity.decorate(await queries.connectivity(), now);
-      res.json({ asOf: now.toISOString(), count: systems.length, systems });
+      res.json({ asOf: now.toISOString(), count: systems.length, rollup: connectivity.rollup(systems), systems });
     } catch (err) {
       next(err);
     }
