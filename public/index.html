@@ -635,10 +635,14 @@
     const CONN_STATUS_CLASS = { ERROR: "ERROR", WARN: "WARN", SUCCESS: "SUCCESS" };
     let appRunsState = null; // { app, req, runs:[], nextBefore, nextBeforeId, loading }
 
-    function appRunsUrl(app, before, beforeId) {
-      let u = "/api/apps/" + encodeURIComponent(app) + "/runs";
-      if (before && beforeId) u += "?before=" + encodeURIComponent(before) + "&beforeId=" + encodeURIComponent(beforeId);
-      return u;
+    const APPRUNS_FILTERS = [["all", "All"], ["issues", "Issues"], ["error", "Errors"]];
+
+    function appRunsUrl(app, before, beforeId, status) {
+      const p = new URLSearchParams();
+      if (before && beforeId) { p.set("before", before); p.set("beforeId", beforeId); }
+      if (status && status !== "all") p.set("status", status);
+      const qs = p.toString();
+      return "/api/apps/" + encodeURIComponent(app) + "/runs" + (qs ? "?" + qs : "");
     }
 
     function renderAppRuns() {
@@ -658,6 +662,21 @@
       const more = st.nextBefore ? " (more available)" : "";
       sub.textContent = `· ${st.runs.length} runs loaded${more}`;
       view.appendChild(sub);
+
+      // Status filter (Phase 13): changing it refetches from page 1 for this app.
+      const ctrl = document.createElement("div");
+      ctrl.className = "controls";
+      for (const [val, label] of APPRUNS_FILTERS) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = label;
+        const active = st.status === val;
+        btn.setAttribute("aria-pressed", String(active));
+        if (active) { btn.disabled = true; btn.style.fontWeight = "700"; }
+        btn.addEventListener("click", () => showAppRuns(st.app, val));
+        ctrl.appendChild(btn);
+      }
+      view.appendChild(ctrl);
 
       const table = document.createElement("table");
       const thead = document.createElement("thead");
@@ -710,12 +729,12 @@
 
     async function fetchAppRunsPage(before, beforeId) {
       const st = appRunsState;
-      const res = await fetch(appRunsUrl(st.app, before, beforeId));
+      const res = await fetch(appRunsUrl(st.app, before, beforeId, st.status));
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
     }
 
-    async function showAppRuns(app) {
+    async function showAppRuns(app, status = "all") {
       const myReq = ++runReq;
       document.getElementById("dashboard").hidden = true;
       document.getElementById("run-view").hidden = true;
@@ -723,7 +742,7 @@
       const view = document.getElementById("appruns-view");
       view.hidden = false;
       window.scrollTo(0, 0);
-      appRunsState = { app, req: myReq, runs: [], nextBefore: null, nextBeforeId: null, loading: true };
+      appRunsState = { app, status, req: myReq, runs: [], nextBefore: null, nextBeforeId: null, loading: true };
       connMessage(view, "Loading run log…");
       let data;
       try { data = await fetchAppRunsPage(null, null); }

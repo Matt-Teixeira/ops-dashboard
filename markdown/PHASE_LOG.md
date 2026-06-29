@@ -8,6 +8,133 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 13 — Run-Log Status Filter
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_13_runlog_errors_filter.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_13.md`
+
+## Goals
+
+- Let the per-app run-log show only the runs that matter (errors / issues), so a noisy
+  app like data_acquisition (~87% error) is filterable. Server-side, composing with
+  the keyset pagination.
+
+## Built
+
+- `lib/app-runs.js`: `normalizeStatusFilter(raw)` -> `all|error|issues` (+ exported
+  `STATUS_FILTERS`).
+- `db/queries.js`: `APP_RUNS_SQL` gains a narrowing predicate on a bound enum `$6`
+  (`all` no-op; `error` = EXISTS ERROR; `issues` = EXISTS ERROR|WARN) over
+  `warn_error_logs`. `appRuns()` takes `statusFilter` (default "all").
+- `server.js`: `?status=` normalized + passed + echoed in the response.
+- `public/index.html`: All / Issues / Errors buttons in `#appruns`; change resets to
+  page 1; `appRunsState.status` threads through `appRunsUrl` so "load more" stays in
+  the filter.
+- `test/app-runs.test.js`: +1 (`normalizeStatusFilter`) + SQL guard now asserts the
+  `$6` enum predicate. 84 total.
+
+## Schema Facts Confirmed (live DB)
+
+- Filter discriminates correctly: `hhm_rpp_ge` (24h: 0 errored, 144 warned) -> all &
+  issues = 144 (all WARN), error = 0. `data_acquisition?status=error` paginates with
+  page 2 still all-ERROR and strictly older. EXISTS over warn_error_logs only.
+
+## Important Decisions
+
+### Bound enum predicate, not interpolation
+
+Decision: the filter is a single bound parameter (`$6`) normalized server-side to one
+of three literals; the SQL switches on it with `OR`.
+
+Reason: no string interpolation (injection-safe), and it stays one query/template so
+keyset pagination is provably unchanged (the predicate only narrows `WHERE`).
+
+Tradeoff: the planner sees all three branches; negligible at this scale, and the
+EXISTS is warn_error_logs-only.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: read-only; no new grant.
+- Query / partition-pruning impact: unchanged (still `inserted_at > $2`); predicate is
+  warn_error_logs-only (no `verbose_log`).
+- Performance impact: a narrowing EXISTS; keyset/LIMIT unchanged.
+- Security impact: bound enum param; normalized; no interpolation.
+- Deployment impact: needs `docker compose restart` (done); no env/grant/schema change.
+- API / response-shape compatibility impact: additive (`status` echoed; new optional
+  `?status` param).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test    # 84/84
+curl /api/apps/hhm_rpp_ge/runs?status=all|issues|error     # 144 / 144 / 0
+curl /api/apps/data_acquisition/runs?status=error (+cursor) # page 2 all-ERROR, older
+```
+
+Results:
+
+- Passed: 84/84 (83 prior + 1 new).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- Filter discriminates (ge: error=0, issues/all=144 WARN); error filter paginates
+  gap/dup-free and stays all-ERROR; default unchanged.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_13.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Phase 14 (connectivity rollup + refresh) — prompt authored.
+
+## Commit Readiness
+
+- Requirements implemented: yes (server-side enum filter + UI).
+- Read-only / least-privilege rules hold: yes.
+- Time-windowed queries partition-pruned: yes (unchanged).
+- Schema assumptions confirmed live: yes (discrimination + pagination).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (84/84 + live).
+- Ready to commit: yes.
+
+---
+
 # Phase 12 — Grid Recent-Run Health
 
 Date:

@@ -237,11 +237,12 @@ function buildApp() {
     // A cursor needs both halves to be well-defined; if only one is present, ignore it.
     const cursorTs = before && beforeId ? before : null;
     const cursorId = before && beforeId ? beforeId : null;
+    const status = appRunsLib.normalizeStatusFilter(req.query.status); // all | error | issues
     try {
       const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
-      const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId);
+      const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId, status);
       const page = appRunsLib.shapePage(rows, limit);
-      res.json({ app: appName, windowHours, count: page.runs.length, ...page });
+      res.json({ app: appName, windowHours, status, count: page.runs.length, ...page });
     } catch (err) {
       next(err);
     }

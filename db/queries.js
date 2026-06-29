@@ -147,6 +147,13 @@ FROM util.app_run_logs
 WHERE app_name = $1
   AND inserted_at > $2::timestamptz
   AND ($3::timestamptz IS NULL OR (inserted_at, run_id) < ($3::timestamptz, $4::uuid))
+  -- Status filter (Phase 13): a narrowing predicate, so keyset pagination is
+  -- unaffected. $6 is a normalized enum ('all'|'error'|'issues'), never interpolated.
+  AND (
+    $6 = 'all'
+    OR ($6 = 'error'  AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))
+    OR ($6 = 'issues' AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' IN ('ERROR', 'WARN')))
+  )
 ORDER BY inserted_at DESC, run_id DESC
 LIMIT $5;
 `;
@@ -181,8 +188,8 @@ function appHealth(sinceIso) {
   return db.any(APP_HEALTH_SQL, [sinceIso]);
 }
 
-function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null) {
-  return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit]);
+function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, statusFilter = "all") {
+  return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
 }
 
 function recentErrors(lookbackDays = 2, limit = 100) {

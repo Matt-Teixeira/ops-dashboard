@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { clampInt, shapePage } = require("../lib/app-runs");
+const { clampInt, shapePage, normalizeStatusFilter } = require("../lib/app-runs");
 
 test("clampInt: non-numeric falls back to the default", () => {
   assert.equal(clampInt(undefined, 24, 1, 720), 24);
@@ -58,9 +58,20 @@ test("shapePage: tolerates non-array input", () => {
   assert.deepEqual(shapePage(null, 10), { runs: [], nextBefore: null, nextBeforeId: null });
 });
 
+test("normalizeStatusFilter: valid values pass (case/space-insensitive), else 'all'", () => {
+  assert.equal(normalizeStatusFilter("all"), "all");
+  assert.equal(normalizeStatusFilter("error"), "error");
+  assert.equal(normalizeStatusFilter("issues"), "issues");
+  assert.equal(normalizeStatusFilter("ERROR"), "error");
+  assert.equal(normalizeStatusFilter(" Issues "), "issues");
+  assert.equal(normalizeStatusFilter("bogus"), "all");
+  assert.equal(normalizeStatusFilter(undefined), "all");
+  assert.equal(normalizeStatusFilter(null), "all");
+});
+
 // DB-free guard on the SQL shape (db/queries.js can't be required without DB env,
-// so assert the text contract instead). Protects the Phase 11 review invariants.
-test("APP_RUNS_SQL: partition-pruned, keyset, lean (no verbose_log)", () => {
+// so assert the text contract instead). Protects the Phase 11/13 review invariants.
+test("APP_RUNS_SQL: partition-pruned, keyset, lean (no verbose_log), parameterized filter", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "db", "queries.js"), "utf8");
   const m = src.match(/const APP_RUNS_SQL = `([\s\S]*?)`;/);
   assert.ok(m, "APP_RUNS_SQL template found");
@@ -72,4 +83,8 @@ test("APP_RUNS_SQL: partition-pruned, keyset, lean (no verbose_log)", () => {
   assert.match(sql, /LIMIT \$5/, "bounded by limit");
   assert.match(sql, /warn_error_logs/, "status/issues from warn_error_logs");
   assert.doesNotMatch(sql, /verbose_log/, "never touches verbose_log (no detoast)");
+  // Phase 13 status filter: a bound enum param ($6), never string-interpolated.
+  assert.match(sql, /\$6 = 'all'/, "status filter keyed off the $6 enum param");
+  assert.match(sql, /\$6 = 'error'/, "error filter");
+  assert.match(sql, /\$6 = 'issues'/, "issues filter");
 });
