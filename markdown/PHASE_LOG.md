@@ -131,19 +131,27 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_10.md`.
+- External (Codex) on `notes/review_handoff_phase_10.md`. `node --test` 72/72.
 
 Critical issues:
 
-- None known.
+- None.
 
 Accepted fixes:
 
-- None yet.
+- (medium) `db/setup-readonly-role.sql` — the `alert` grant was additive, so
+  re-running it could not *prove* the "only these two tables" claim if the role had
+  drifted or held inherited/PUBLIC privileges. Made it fail closed: `REVOKE ALL` on
+  schema `alert` and its tables from `ops_dashboard_ro` first, then grant only
+  `USAGE` + the two `SELECT`s, then a `DO` block that `RAISE`s (aborting under
+  `ON_ERROR_STOP`) if any other effective table privilege — or `CREATE` on the
+  schema — is present. `has_*_privilege` is used so PUBLIC and role-membership
+  privileges are caught, not just direct grants.
 
 Deferred findings:
 
-- None.
+- None. (Codex otherwise confirmed: narrow query, shared sanitized 500, pure/covered
+  `lib/connectivity.js`, UI renders alert-derived values via text nodes.)
 
 ## Problems Encountered
 

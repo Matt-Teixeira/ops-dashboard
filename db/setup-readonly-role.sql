@@ -40,11 +40,44 @@ GRANT CONNECT ON DATABASE staging TO ops_dashboard_ro;
 GRANT USAGE   ON SCHEMA   util     TO ops_dashboard_ro;
 GRANT SELECT  ON util.app_run_logs TO ops_dashboard_ro;
 
--- Connectivity panel (Phase 10): read the latest per-system connectivity state.
--- SELECT-only on exactly these two tables; no other object in schema alert.
+-- Connectivity panel (Phase 10): SELECT-only on exactly these two tables and
+-- nothing else in schema alert. Fail closed rather than merely additive: first
+-- strip any role-level privileges this role may have accumulated in schema alert,
+-- then grant only the intended ones, then VERIFY no other privilege is effective
+-- (including via PUBLIC or an inherited role membership). Re-running this script
+-- then *proves* the "only these two tables" claim instead of just adding to it.
+REVOKE ALL ON ALL TABLES IN SCHEMA alert FROM ops_dashboard_ro;
+REVOKE ALL ON SCHEMA alert               FROM ops_dashboard_ro;
+
 GRANT USAGE   ON SCHEMA   alert                  TO ops_dashboard_ro;
 GRANT SELECT  ON alert.offline_hhm_conn          TO ops_dashboard_ro;
 GRANT SELECT  ON alert.offline_mmb_conn          TO ops_dashboard_ro;
+
+-- Verify EFFECTIVE privileges (has_*_privilege accounts for PUBLIC and role
+-- membership, not just direct grants): ops_dashboard_ro may hold ONLY SELECT on
+-- the two connectivity tables and no CREATE on the schema. Anything else aborts
+-- the script (ON_ERROR_STOP is on), so drift is caught, not silently tolerated.
+-- (A PUBLIC grant on another alert table will trip this by design.)
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  SELECT string_agg(n.nspname || '.' || c.relname || ':' || priv, ', ' ORDER BY c.relname, priv)
+    INTO bad
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) AS priv
+  WHERE n.nspname = 'alert'
+    AND c.relkind IN ('r','p','v','m','f')   -- tables, partitioned tables, views, matviews, foreign tables
+    AND has_table_privilege('ops_dashboard_ro', c.oid, priv)
+    AND NOT (c.relname IN ('offline_hhm_conn','offline_mmb_conn') AND priv = 'SELECT');
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'ops_dashboard_ro has unexpected privileges in schema alert: %', bad;
+  END IF;
+  IF has_schema_privilege('ops_dashboard_ro', 'alert', 'CREATE') THEN
+    RAISE EXCEPTION 'ops_dashboard_ro unexpectedly has CREATE on schema alert';
+  END IF;
+END $$;
 
 -- Sanity: this role must NOT be able to write. (Expected: permission denied.)
 --   SET ROLE ops_dashboard_ro;
