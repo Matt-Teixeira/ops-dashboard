@@ -13,6 +13,9 @@ log table `util.app_run_logs` and renders:
 - a **job grid** — latest run per `(app, job)`: status, duration, age, staleness
 - an **error feed** — recent WARN/ERROR events across the suite
 - a **run drill-down** — the full event timeline for one run
+- a **connectivity panel** — latest per-equipment connectivity state (which
+  systems are offline) from the `alert.*` tables, surfacing per-system detail the
+  `data_acquisition/(default)` job bucket hides
 
 It does not orchestrate, ingest, or mutate anything in the pipeline.
 
@@ -46,6 +49,14 @@ the table changes):
 Verify assumptions against the live DB before building query logic. If reality
 differs from `docs/logging-schema.md`, fix the doc in the same phase.
 
+A **second, read-only contract** (added Phase 10) backs the connectivity panel:
+`alert.offline_hhm_conn` and `alert.offline_mmb_conn`. Each is **upserted to one
+row per `system_id`** (PK) holding that equipment's latest connectivity state — so,
+unlike `app_run_logs`, they are tiny, **not partitioned**, and carry **no json blob
+to detoast**. A full scan is sub-millisecond, so the connectivity query runs on the
+request path with no cache. They are written by `data_acquisition`; the dashboard
+only reads them. See `docs/connectivity-schema.md`.
+
 ## Performance Rule
 
 The biggest cost is detoasting large `verbose_log` JSON. Keep it off the request
@@ -61,10 +72,13 @@ path.
 
 ## Least-Privilege Rule
 
-The dashboard connects as a dedicated read-only role (`ops_dashboard_ro`) with
-only `CONNECT`, `USAGE ON SCHEMA util`, and `SELECT ON util.app_run_logs`. Never
-ship the app pointed at a superuser. Role setup lives in
-`db/setup-readonly-role.sql`.
+The dashboard connects as a dedicated read-only role (`ops_dashboard_ro`). Its
+grants are `CONNECT`, `USAGE ON SCHEMA util`, `SELECT ON util.app_run_logs`, and —
+added in Phase 10, the first read outside `util` — `USAGE ON SCHEMA alert` plus
+`SELECT` on exactly `alert.offline_hhm_conn` and `alert.offline_mmb_conn`. Nothing
+else: no other object in either schema, no writes, no DDL. Never ship the app
+pointed at a superuser. Role setup lives in `db/setup-readonly-role.sql` (idempotent;
+re-run as a superuser to apply new grants before deploying code that needs them).
 
 ## House-Style Rule
 

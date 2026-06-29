@@ -102,8 +102,30 @@ ORDER BY inserted_at DESC
 LIMIT 1;
 `;
 
+// Connectivity panel (Phase 10): the latest connectivity state per equipment,
+// unioned across the HHM (SSH telemetry) and MMB (Philips rsync) alert tables and
+// labeled by source. Unlike the queries above there is NO inserted_at filter and
+// NO cache: these alert tables are upserted to ONE row per system_id (PK), are
+// tiny (hundreds of rows total), carry no json blob to detoast, and are not
+// partitioned -- so a full scan is sub-millisecond and safe on the request path.
+// (The Performance Rule targets the verbose_log detoast cost, which is absent
+// here.) Sorting/derivation live in lib/connectivity.js, not SQL.
+const CONNECTIVITY_SQL = `
+SELECT 'HHM' AS source, system_id, capture_datetime, inserted_at,
+       successful_acquisition, host_intervention, connection_error, error_category, phase
+FROM alert.offline_hhm_conn
+UNION ALL
+SELECT 'MMB' AS source, system_id, capture_datetime, inserted_at,
+       successful_acquisition, host_intervention, connection_error, error_category, phase
+FROM alert.offline_mmb_conn;
+`;
+
 function jobsLatestSince(sinceIso) {
   return db.any(JOBS_LATEST_SQL, [sinceIso]);
+}
+
+function connectivity() {
+  return db.any(CONNECTIVITY_SQL);
 }
 
 function recentErrors(lookbackDays = 2, limit = 100) {
@@ -121,4 +143,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, ping };

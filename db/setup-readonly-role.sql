@@ -5,9 +5,17 @@
 --     -f db/setup-readonly-role.sql
 --
 -- The dashboard is read-only, so its credential should be too. This role can
--- ONLY connect and SELECT from util.app_run_logs -- no writes, no DDL, no other
--- tables. Reads go through the partitioned parent, so a single SELECT grant on
--- the parent also covers existing and future monthly partitions.
+-- ONLY connect and SELECT from util.app_run_logs and the two alert.* connectivity
+-- tables -- no writes, no DDL, no other tables. Reads of util.app_run_logs go
+-- through the partitioned parent, so a single SELECT grant on the parent also
+-- covers existing and future monthly partitions.
+--
+-- Phase 10 added the first read OUTSIDE schema util: the connectivity panel selects
+-- the latest per-system state from alert.offline_hhm_conn / alert.offline_mmb_conn
+-- (one upserted row per system_id; written by data_acquisition). Still SELECT-only.
+-- This file is idempotent; re-run it (as a superuser) to apply the new grants
+-- BEFORE deploying the Phase 10 code, or /api/connectivity returns 500
+-- (permission denied for schema alert). See markdown/DEPLOYMENT.md.
 
 \set ON_ERROR_STOP on
 
@@ -32,6 +40,16 @@ GRANT CONNECT ON DATABASE staging TO ops_dashboard_ro;
 GRANT USAGE   ON SCHEMA   util     TO ops_dashboard_ro;
 GRANT SELECT  ON util.app_run_logs TO ops_dashboard_ro;
 
+-- Connectivity panel (Phase 10): read the latest per-system connectivity state.
+-- SELECT-only on exactly these two tables; no other object in schema alert.
+GRANT USAGE   ON SCHEMA   alert                  TO ops_dashboard_ro;
+GRANT SELECT  ON alert.offline_hhm_conn          TO ops_dashboard_ro;
+GRANT SELECT  ON alert.offline_mmb_conn          TO ops_dashboard_ro;
+
 -- Sanity: this role must NOT be able to write. (Expected: permission denied.)
 --   SET ROLE ops_dashboard_ro;
 --   INSERT INTO util.app_run_logs(app_name, run_id) VALUES ('x', gen_random_uuid());
+-- Sanity: the connectivity reads should now succeed. (Expected: a row count.)
+--   SET ROLE ops_dashboard_ro;
+--   SELECT count(*) FROM alert.offline_hhm_conn;
+--   SELECT count(*) FROM alert.offline_mmb_conn;

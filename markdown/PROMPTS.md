@@ -64,7 +64,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 7 | `prompt_7_self_monitoring.txt` | Completed | Opt-in heartbeat under `app_name = "ops-dashboard"` via a DB-enforced writer; appears in its own grid. See PHASE_LOG. |
 | 8 | `prompt_8_grid_grouping_sort.txt` | Completed | Client-side grid grouping (app/job/none, collapsible) + sortable columns incl. last-run datetime; pure transforms in `public/grid-view.js` (browser-served, not `lib/`). Frontend-only, additive. See PHASE_LOG. |
 | 9 | `prompt_9_grid_filters.txt` | Completed | Filter/search box + status chips (incl. STALE) + summary-counts header + last-updated/auto-refresh; `filterJobs`/`summarize` in `public/grid-view.js`. Frontend-only. See PHASE_LOG. |
-| 10 | `prompt_10_connectivity_panel.txt` | Pending | Dedicated read-only Connectivity view over `alert.offline_hhm_conn`/`offline_mmb_conn` (latest per-system state, offline-first); expands `ops_dashboard_ro` with SELECT on schema `alert` — the first read outside `util`. |
+| 10 | `prompt_10_connectivity_panel.txt` | Completed | Dedicated read-only Connectivity view over `alert.offline_hhm_conn`/`offline_mmb_conn` (latest per-system state, offline-first); expands `ops_dashboard_ro` with SELECT on schema `alert` — the first read outside `util`. Deploy needs the grant applied (superuser) + restart. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.

@@ -36,6 +36,21 @@ Source is bind-mounted, so most code changes need only `docker compose restart`.
 A `.env` change needs `docker compose up -d` (recreate). A dependency change needs
 the `npm install` step again.
 
+### Grant changes (e.g. Phase 10 connectivity)
+
+`db/setup-readonly-role.sql` is idempotent. When a phase widens the read-only role's
+grants (Phase 10 added `SELECT` on the `alert.*` connectivity tables), **re-run it as
+a superuser BEFORE restarting with the new code** — otherwise the new endpoint
+returns 500 (`permission denied for schema alert`) until the grant lands:
+
+```bash
+psql -h <host> -U postgres -d staging -v ro_pw='<existing-pw>' \
+  -f db/setup-readonly-role.sql      # ro_pw is required by the script; reuse the current password
+# then, as ops_dashboard_ro, confirm the new reads work:
+#   SELECT count(*) FROM alert.offline_hhm_conn;  SELECT count(*) FROM alert.offline_mmb_conn;
+docker compose restart
+```
+
 ## Smoke test (run after any deploy that touches routing, queries, creds, or compose)
 
 ```bash
@@ -47,6 +62,8 @@ curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" localhost:8080/api/jobs/
 
 curl -s "localhost:8080/api/errors?limit=5"          # recent WARN/ERROR events
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/runs/not-a-uuid   # expect 400
+
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/connectivity      # expect 200 (500 => alert grant not applied)
 ```
 
 A green smoke test = healthz ok, grid serves 200 in well under a second once

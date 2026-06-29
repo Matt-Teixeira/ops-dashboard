@@ -41,3 +41,9 @@ All apps are cron-driven, run via `docker compose`, write structured logs to
   could be large. Plan queries around indexes on `app_name` and a timestamp; confirm
   whether the table has a created-at column or whether timing comes from the first/last
   event's `dt` inside `verbose_log`.
+- **Per-system connectivity (`data_acquisition`):** the grid buckets all of
+  `data_acquisition` into one `(default)` row, hiding which equipment systems are
+  offline. `data_acquisition` also upserts the latest per-`system_id` connectivity
+  state into `alert.offline_hhm_conn` (SSH telemetry) and `alert.offline_mmb_conn`
+  (Philips MRI rsync). The Phase 10 connectivity panel reads these (read-only). See
+  [`docs/connectivity-schema.md`](./connectivity-schema.md).

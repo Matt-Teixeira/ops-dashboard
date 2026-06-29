@@ -8,6 +8,7 @@ const express = require("express");
 const queries = require("./db/queries");
 const runs = require("./lib/runs");
 const staleness = require("./lib/staleness");
+const connectivity = require("./lib/connectivity");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
@@ -136,6 +137,22 @@ function buildApp() {
       const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
       const events = await queries.recentErrors(ERRORS_LOOKBACK_DAYS, limit);
       res.json({ lookbackDays: ERRORS_LOOKBACK_DAYS, count: events.length, events });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Connectivity panel: latest per-equipment connectivity state across the HHM
+  // (SSH) and MMB (rsync) alert tables. Tiny tables (PK on system_id, no detoast,
+  // no partitions) so this runs directly on the request path -- no cache. The
+  // worst-first sort and the two ages are derived in lib/connectivity.js so the
+  // handler stays thin. If the alert grant is missing, the SELECT raises and the
+  // shared error handler returns a sanitized 500.
+  app.get("/api/connectivity", async (_req, res, next) => {
+    try {
+      const now = new Date();
+      const systems = connectivity.decorate(await queries.connectivity(), now);
+      res.json({ asOf: now.toISOString(), count: systems.length, systems });
     } catch (err) {
       next(err);
     }

@@ -61,7 +61,7 @@
 </head>
 <body>
   <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
-  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button></div>
+  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a></div>
 
   <!-- Dashboard view: job grid + error feed. Hidden while a run drill-down is open. -->
   <div id="dashboard">
@@ -99,6 +99,9 @@
 
   <!-- Run drill-down view: one run's event timeline. Populated by showRun(). -->
   <section id="run-view" hidden></section>
+
+  <!-- Connectivity view: latest per-equipment connectivity. Populated by showConnectivity(). -->
+  <section id="connectivity-view" hidden></section>
 
   <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
   <script src="grid-view.js"></script>
@@ -563,6 +566,7 @@
     async function showRun(runId, hint) {
       const myReq = ++runReq;
       document.getElementById("dashboard").hidden = true;
+      document.getElementById("connectivity-view").hidden = true;
       const view = document.getElementById("run-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -586,10 +590,114 @@
     }
 
     function showDashboard() {
-      runReq++; // invalidate any in-flight run fetch so it can't render after we leave
+      runReq++; // invalidate any in-flight run/connectivity fetch so it can't render after we leave
       document.getElementById("run-view").hidden = true;
+      document.getElementById("connectivity-view").hidden = true;
       document.getElementById("dashboard").hidden = false;
       if (!dashboardLoaded) refresh();
+    }
+
+    // --- connectivity view (Phase 10) ----------------------------------------
+
+    const CONN_BADGE = { OFFLINE: "ERROR", ONLINE: "SUCCESS", UNKNOWN: "unknown" };
+
+    function connMessage(view, msg) {
+      view.replaceChildren(backLink());
+      const p = document.createElement("p");
+      p.className = "run-msg";
+      p.textContent = msg;
+      view.appendChild(p);
+    }
+
+    function renderConnectivity(view, data) {
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const systems = Array.isArray(data.systems) ? data.systems : [];
+      const offline = systems.filter((s) => s.status === "OFFLINE").length;
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "Connectivity";
+      view.appendChild(h2);
+
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      sub.textContent = `· ${systems.length} systems · ${offline} offline · as of ${fmtTime(data.asOf)}`;
+      view.appendChild(sub);
+
+      if (!systems.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No connectivity rows.";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      // [header text, optional title]
+      const headers = [
+        ["Source"], ["System"], ["Status"], ["Error"], ["Phase"], ["Detail"],
+        ["Data age", "how stale the equipment data is (capture time)"],
+        ["Last checked", "when the alert row was last written (inserted_at)"],
+        ["Host int.", "host intervention required"],
+      ];
+      for (const [text, title] of headers) {
+        const th = document.createElement("th");
+        th.textContent = text;
+        if (title) th.title = title;
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const s of systems) {
+        const tr = document.createElement("tr");
+        if (s.status === "OFFLINE") tr.className = "row-ERROR";
+        tr.appendChild(cell(s.source));
+        tr.appendChild(cell(s.systemId));
+        const st = cell("");
+        const b = document.createElement("span");
+        b.className = "badge " + (CONN_BADGE[s.status] || "unknown");
+        b.textContent = s.status;
+        st.appendChild(b);
+        tr.appendChild(st);
+        tr.appendChild(cell(s.errorCategory || "—"));
+        tr.appendChild(cell(s.phase || "—"));
+        tr.appendChild(cell(s.connectionError || "—", "err-msg"));
+        tr.appendChild(cell(fmtAge(s.captureAgeMs), "num"));
+        tr.appendChild(cell(fmtAge(s.checkedAgeMs), "num"));
+        tr.appendChild(cell(s.hostIntervention ? "yes" : "no"));
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+    }
+
+    async function showConnectivity() {
+      const myReq = ++runReq; // share the navigation token so a stale fetch can't render
+      document.getElementById("dashboard").hidden = true;
+      document.getElementById("run-view").hidden = true;
+      const view = document.getElementById("connectivity-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      connMessage(view, "Loading connectivity…");
+
+      let res;
+      try { res = await fetch("/api/connectivity"); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load connectivity."); return; }
+      if (myReq !== runReq) return; // superseded by a newer navigation
+      if (!res.ok) return connMessage(view, "Couldn't load connectivity.");
+
+      let data;
+      try { data = await res.json(); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load connectivity."); return; }
+      if (myReq !== runReq) return;
+      renderConnectivity(view, data);
     }
 
     function route() {
@@ -597,6 +705,8 @@
       if (hash.startsWith("run=")) {
         const p = new URLSearchParams(hash);
         showRun(p.get("run"), p.get("at"));
+      } else if (hash === "connectivity") {
+        showConnectivity();
       } else {
         showDashboard();
       }

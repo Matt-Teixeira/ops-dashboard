@@ -8,6 +8,167 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 10 — Connectivity Panel
+
+Date:
+2026-06-29
+
+Status:
+Completed (code); live deploy needs the alert grant applied (see Validation)
+
+Prompt:
+`prompts/prompt_10_connectivity_panel.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_10.md`
+
+## Goals
+
+- Surface each equipment system's latest connectivity state (offline-first) across
+  the HHM (SSH) and MMB (rsync) sources — the per-system detail the
+  `data_acquisition/(default)` grid bucket hides — read-only, in a dedicated view.
+
+## Built
+
+- `db/setup-readonly-role.sql`: grants `USAGE ON SCHEMA alert` + `SELECT` on exactly
+  `alert.offline_hhm_conn` and `alert.offline_mmb_conn` to `ops_dashboard_ro` (the
+  first read outside `util`). Idempotent; header revised; sanity-check comments added.
+- `db/queries.js`: `CONNECTIVITY_SQL` (`UNION ALL` of the two tables, labeled by
+  `source`) + `connectivity()`. No `inserted_at` filter and no cache (justified below).
+- `lib/connectivity.js` (server-only, pure; mirrors `lib/runs.js`): `connStatus`
+  (false→OFFLINE / true→ONLINE / null→UNKNOWN), `captureAgeMs`/`checkedAgeMs`,
+  `sortConnectivity` (worst-first → oldest-capture → system_id), `decorate`.
+- `test/connectivity.test.js`: +11 tests (72 total).
+- `server.js`: `GET /api/connectivity` → `{asOf, count, systems}`; thin handler,
+  errors via the shared sanitizing handler.
+- `public/index.html`: routed `#connectivity` view + header nav link; OFFLINE rows on
+  top with the `.row-ERROR` tint; columns Source / System / Status / Error / Phase /
+  Detail / Data age / Last checked / Host int. Reuses `fmtAge`/`fmtTime`/`cell`, the
+  badge CSS, and the `runReq` stale-fetch guard.
+- Docs: `ARCHITECTURE_PRINCIPLES.md` (grants, product identity, second contract),
+  `docs/connectivity-schema.md` (new), `docs/apps-suite.md`, `DEPLOYMENT.md`.
+
+## Schema Facts Confirmed (live DB)
+
+- As `ops_dashboard_ro` today, `SELECT` on both `alert.*` tables raises
+  `permission denied for schema alert` — confirming the grant is required.
+- Table shape (live inspection, DB `staging`, 2026-06): PK `system_id varchar(8)`,
+  columns `capture_datetime`/`inserted_at` (timestamptz), `successful_acquisition`
+  (bool), `host_intervention` (bool), `connection_error` (text), `error_category`
+  (varchar), `phase` (varchar); HHM also has `rpp_host_datetime`/`daily_total_history`.
+  Upsert => one row per `system_id`; PK index only; not partitioned; no json columns.
+
+## Important Decisions
+
+### Request-path query, no cache, no inserted_at filter
+
+Decision: `CONNECTIVITY_SQL` runs directly on each request with no cache and no time
+filter.
+
+Reason: the alert tables are tiny (hundreds of rows), PK-indexed, json-free, and
+**not partitioned** — a full scan is sub-millisecond. The Performance Rule's caching
+and partition-pruning mandates target the large, partitioned, json `app_run_logs`;
+neither cost exists here.
+
+Tradeoff: a sequential scan per request, accepted as negligible at this size.
+
+### Server-only lib module (no browser script)
+
+Decision: `lib/connectivity.js` is a normal server-side module (like `lib/runs.js`),
+not a browser-served file like `public/grid-view.js`.
+
+Reason: the connectivity view has no client-side controls this phase, so the API
+returns the final sorted/decorated shape and the browser just renders it — no need to
+ship the sort/derive logic to the client.
+
+Tradeoff: ages are computed at fetch time (the view is not auto-refreshing), which is
+fine for an on-demand panel.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: **expands** the RO role to schema `alert`
+  (SELECT on exactly two tables) — the first read outside `util` — enforced in
+  `db/setup-readonly-role.sql`. Still no writes/DDL anywhere.
+- Query / partition-pruning impact: new query is on unpartitioned tables, so
+  partition pruning is n/a; documented. `util` queries unchanged.
+- Performance (request-path latency) impact: sub-ms full scan of ~540 rows; no
+  detoast; grid/errors paths untouched.
+- Security impact: missing grant surfaces as a sanitized 500; all `alert.*`-derived
+  text rendered via `textContent` (no innerHTML); the query takes no client input.
+- Deployment impact: **two-step** — run `db/setup-readonly-role.sql` (superuser) to
+  apply the grant, then restart; before the grant, `/api/connectivity` 500s.
+- API / response-shape compatibility impact: additive (`/api/connectivity` is new).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test          # 72/72
+docker run --rm -v "$PWD":/w -w /w node:lts node --check server.js lib/connectivity.js db/queries.js
+docker exec ops-dashboard-app-1 node -e 'require("./db/queries"); require("./lib/connectivity")'  # load OK in real env
+```
+
+Results:
+
+- Passed: 72/72 unit tests (61 prior + 11 connectivity); all changed server files
+  parse; modules load in the running container.
+- Failed: none.
+- Not run: **live `/api/connectivity` smoke** — blocked on the `alert` grant being
+  applied by a superuser and a container restart (the documented two-step deploy).
+  Confirmed the pre-grant state (RO denied) so the grant is demonstrably required.
+
+Manual / smoke tests:
+
+- Confirmed `ops_dashboard_ro` is denied on both `alert.*` tables today.
+- Inline `index.html` script passes `node --check`.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_10.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None (the bare `node:lts` container can't load `db/pg-pool` without `.env`/SSL;
+  verified the load in the running container instead).
+
+## Follow-Up Tasks
+
+- Apply the `alert` grant (superuser) + restart, then run the live `/api/connectivity`
+  smoke and record it.
+- Deferred: grid connectivity rollup badge on the `data_acquisition` row; per-run
+  correlation via `stats.acquisition_history`.
+
+## Commit Readiness
+
+- Requirements implemented: yes (query, lib, endpoint, view, grant SQL, docs).
+- Read-only / least-privilege rules hold: yes (SELECT-only grant on two tables).
+- Time-windowed queries partition-pruned: n/a (alert tables unpartitioned; justified).
+- Schema assumptions confirmed live: yes (shape + the RO-denied precondition).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (72/72 + parse/load); live smoke pending the grant deploy.
+- Ready to commit: yes (live smoke to follow at deploy).
+
+---
+
 # Phase 9 — Grid Filters, Summary & Refresh
 
 Date:
