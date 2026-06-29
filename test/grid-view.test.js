@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { sortJobs, groupJobs, groupRollupStatus, STATUS_RANK } = require("../public/grid-view");
+const { sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, STATUS_RANK } = require("../public/grid-view");
 
 // A small grid fixture. for clarity each field is set only where a test reads it.
 const JOBS = [
@@ -110,4 +110,70 @@ test("STATUS_RANK orders ERROR worst to INFO best", () => {
   assert.ok(STATUS_RANK.ERROR < STATUS_RANK.WARN);
   assert.ok(STATUS_RANK.WARN < STATUS_RANK.SUCCESS);
   assert.ok(STATUS_RANK.SUCCESS < STATUS_RANK.INFO);
+});
+
+// --- Phase 9: filterJobs + summarize ----------------------------------------
+
+const FJOBS = [
+  { app: "hhm_rpp_ge", job: "GE_CT", runId: "aaa-111", status: "SUCCESS", stale: false },
+  { app: "hhm_rpp_ge", job: "GE_MRI", runId: "bbb-222", status: "ERROR", stale: false },
+  { app: "data_acquisition", job: "(default)", runId: "ccc-333", status: "WARN", stale: true },
+  { app: "hhm_rpp_siemens", job: "SIEMENS_CV", runId: "ddd-444", status: "SUCCESS", stale: null },
+  { app: "hhm_rpp_ge", job: "GE_CV", runId: "eee-555", status: "SUCCESS", stale: true },
+];
+const noFilter = { search: "", statuses: new Set() };
+
+test("filterJobs: empty filter returns ALL jobs as a new array", () => {
+  const out = filterJobs(FJOBS, noFilter);
+  assert.equal(out.length, FJOBS.length);
+  assert.notEqual(out, FJOBS); // new array, not the same reference
+});
+
+test("filterJobs: search matches job name, case-insensitively", () => {
+  assert.deepEqual(filterJobs(FJOBS, { search: "ge_", statuses: new Set() }).map((j) => j.job), ["GE_CT", "GE_MRI", "GE_CV"]);
+  assert.deepEqual(filterJobs(FJOBS, { search: "GE_CT", statuses: new Set() }).map((j) => j.job), ["GE_CT"]);
+});
+
+test("filterJobs: search matches app and runId too", () => {
+  assert.equal(filterJobs(FJOBS, { search: "data_acquisition", statuses: new Set() }).length, 1);
+  assert.deepEqual(filterJobs(FJOBS, { search: "ccc", statuses: new Set() }).map((j) => j.runId), ["ccc-333"]);
+});
+
+test("filterJobs: no match yields an empty array", () => {
+  assert.deepEqual(filterJobs(FJOBS, { search: "nope", statuses: new Set() }), []);
+});
+
+test("filterJobs: status set filters by j.status", () => {
+  assert.deepEqual(filterJobs(FJOBS, { search: "", statuses: new Set(["ERROR"]) }).map((j) => j.job), ["GE_MRI"]);
+});
+
+test("filterJobs: STALE matches j.stale === true, NOT a status, regardless of status", () => {
+  const out = filterJobs(FJOBS, { search: "", statuses: new Set(["STALE"]) });
+  assert.deepEqual(out.map((j) => j.job).sort(), ["(default)", "GE_CV"]); // WARN+stale and SUCCESS+stale
+  // the stale === null (unknown cadence) siemens row is NOT stale
+  assert.ok(!out.some((j) => j.job === "SIEMENS_CV"));
+});
+
+test("filterJobs: multiple tokens are OR'd (ERROR or STALE)", () => {
+  const out = filterJobs(FJOBS, { search: "", statuses: new Set(["ERROR", "STALE"]) });
+  assert.deepEqual(out.map((j) => j.job).sort(), ["(default)", "GE_CV", "GE_MRI"]);
+});
+
+test("filterJobs: search AND status combine (both must hold)", () => {
+  const out = filterJobs(FJOBS, { search: "ge_", statuses: new Set(["SUCCESS"]) });
+  assert.deepEqual(out.map((j) => j.job).sort(), ["GE_CT", "GE_CV"]);
+});
+
+test("filterJobs: accepts an array for statuses, and does not mutate input", () => {
+  const before = FJOBS.map((j) => j.job);
+  assert.equal(filterJobs(FJOBS, { statuses: ["ERROR"] }).length, 1);
+  assert.deepEqual(FJOBS.map((j) => j.job), before);
+});
+
+test("summarize: totals, per-status, stale, and unknown-cadence counts", () => {
+  assert.deepEqual(summarize(FJOBS), { total: 5, ERROR: 1, WARN: 1, SUCCESS: 3, stale: 2, unknown: 1 });
+});
+
+test("summarize: empty input is all zeros", () => {
+  assert.deepEqual(summarize([]), { total: 0, ERROR: 0, WARN: 0, SUCCESS: 0, stale: 0, unknown: 0 });
 });

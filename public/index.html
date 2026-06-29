@@ -49,6 +49,14 @@
     tr.group-head .disclosure { display: inline-block; width: 1em; color: #888; }
     tr.group-head .grp-count { color: #888; font-weight: 400; margin-left: .4rem; }
     tr.group-head .badge { margin-left: .5rem; }
+    /* Filters, status chips, summary + refresh (Phase 9). */
+    .controls input[type="search"] { font: inherit; padding: .15rem .45rem; min-width: 18ch; }
+    .controls .spacer { flex: 1; }
+    .chips { display: inline-flex; gap: .3rem; flex-wrap: wrap; }
+    .chip { font: inherit; cursor: pointer; border: 0; opacity: .45; }
+    .chip.active { opacity: 1; box-shadow: 0 0 0 2px #fff6; }
+    #updated { font-variant-numeric: tabular-nums; }
+    .controls label { display: inline-flex; align-items: center; gap: .3rem; }
   </style>
 </head>
 <body>
@@ -60,6 +68,7 @@
     <section>
       <h2 style="font-size:.95rem">Job grid</h2>
       <div class="controls">
+        <input id="grid-search" type="search" placeholder="filter app / job / run id" autocomplete="off" aria-label="filter the grid" />
         <label>Group by
           <select id="group-by">
             <option value="app">App</option>
@@ -67,7 +76,10 @@
             <option value="none">None</option>
           </select>
         </label>
-        <span class="muted">click a column to sort &middot; a group header to collapse</span>
+        <span id="status-chips" class="chips" role="group" aria-label="filter by status"></span>
+        <span class="spacer"></span>
+        <span class="muted" id="updated"></span>
+        <label class="muted"><input type="checkbox" id="autorefresh" checked /> auto-refresh</label>
       </div>
       <table id="grid"><thead><tr>
         <th data-sort-key="app">App</th><th data-sort-key="job">Job</th>
@@ -112,21 +124,27 @@
     const GRID_VIEW_KEY = "ops-grid-view";
     const GROUP_OPTS = ["app", "job", "none"];
     const SORT_KEYS = ["app", "job", "status", "lastRun", "age", "duration", "issues"];
+    const STATUS_TOKENS = ["ERROR", "WARN", "SUCCESS", "STALE"]; // clickable status chips
+    // The in-process grid cache only changes every GRID_REFRESH_MS (server default
+    // 120s), so auto-refresh polls no faster than that -- anything quicker is wasted.
+    const AUTO_REFRESH_MS = 120000;
     let gridData = null; // last /api/jobs/latest payload
     const gridView = loadGridView();
 
     function loadGridView() {
-      const def = { groupBy: "app", sortKey: "lastRun", sortDir: "desc" };
+      const def = { groupBy: "app", sortKey: "lastRun", sortDir: "desc", search: "" };
       try {
         const s = JSON.parse(localStorage.getItem(GRID_VIEW_KEY) || "{}");
         return {
           groupBy: GROUP_OPTS.includes(s.groupBy) ? s.groupBy : def.groupBy,
           sortKey: SORT_KEYS.includes(s.sortKey) ? s.sortKey : def.sortKey,
           sortDir: s.sortDir === "asc" || s.sortDir === "desc" ? s.sortDir : def.sortDir,
+          search: typeof s.search === "string" ? s.search : "",
+          statuses: new Set((Array.isArray(s.statuses) ? s.statuses : []).filter((t) => STATUS_TOKENS.includes(t))),
           collapsed: new Set(Array.isArray(s.collapsed) ? s.collapsed : []),
         };
       } catch {
-        return { ...def, collapsed: new Set() };
+        return { ...def, statuses: new Set(), collapsed: new Set() };
       }
     }
 
@@ -136,6 +154,8 @@
           groupBy: gridView.groupBy,
           sortKey: gridView.sortKey,
           sortDir: gridView.sortDir,
+          search: gridView.search,
+          statuses: Array.from(gridView.statuses),
           collapsed: Array.from(gridView.collapsed),
         }));
       } catch { /* storage unavailable -> view state stays in memory only */ }
@@ -150,11 +170,7 @@
         return;
       }
       gridData = r;
-      const asOf = r.asOf ? new Date(r.asOf).toLocaleTimeString() : "—";
-      const unknownCadence = r.coverage && r.coverage.unknown ? ` · ${r.coverage.unknown} cadence unknown` : "";
-      document.getElementById("meta").textContent =
-        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOf}` + unknownCadence + (r.stale ? ` · ⚠ ${r.stale}` : "");
-      renderGrid();
+      renderGrid(); // builds the summary header + chips from gridData
     }
 
     // Status cell with the run-status badge plus the STALE / "? CADENCE" markers.
@@ -231,9 +247,12 @@
     function renderGrid() {
       if (!gridData) return;
       updateSortIndicators();
+      // Pipeline: filter -> sort -> group (filtering must precede grouping).
+      const visible = GridView.filterJobs(gridData.jobs || [], { search: gridView.search, statuses: gridView.statuses });
+      renderSummary(visible.length);
       const tb = document.querySelector("#grid tbody");
       tb.innerHTML = "";
-      const sorted = GridView.sortJobs(gridData.jobs || [], gridView.sortKey, gridView.sortDir);
+      const sorted = GridView.sortJobs(visible, gridView.sortKey, gridView.sortDir);
       const groups = GridView.groupJobs(sorted, gridView.groupBy);
       const grouped = gridView.groupBy === "app" || gridView.groupBy === "job";
       const frag = document.createDocumentFragment();
@@ -245,6 +264,53 @@
         for (const j of g.rows) frag.appendChild(jobRow(j));
       }
       tb.appendChild(frag);
+    }
+
+    // Summary header + status chips. Counts are over the WHOLE grid (gridData.jobs)
+    // so the chips are a stable overview; the filtered count is shown as "showing N".
+    function renderSummary(visibleCount) {
+      const r = gridData;
+      const s = GridView.summarize(r.jobs || []);
+      const asOfTime = r.asOf ? new Date(r.asOf).toLocaleTimeString() : "—";
+      const unknownCadence = s.unknown ? ` · ${s.unknown} cadence unknown` : "";
+      const filtering = !!gridView.search || gridView.statuses.size > 0;
+      const showing = filtering ? ` · showing ${visibleCount}` : "";
+      document.getElementById("meta").textContent =
+        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOfTime}` + unknownCadence + showing + (r.stale ? ` · ⚠ ${r.stale}` : "");
+      renderChips(s);
+      updateUpdatedLabel();
+    }
+
+    // token -> badge css class (STALE reuses the purple stale badge).
+    const CHIP_CLASS = { ERROR: "ERROR", WARN: "WARN", SUCCESS: "SUCCESS", STALE: "stale" };
+
+    function renderChips(summary) {
+      const box = document.getElementById("status-chips");
+      box.replaceChildren();
+      for (const token of STATUS_TOKENS) {
+        const count = token === "STALE" ? summary.stale : summary[token];
+        const active = gridView.statuses.has(token);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip badge " + CHIP_CLASS[token] + (active ? " active" : "");
+        btn.textContent = token + " " + count;
+        btn.setAttribute("aria-pressed", String(active));
+        btn.addEventListener("click", () => {
+          if (gridView.statuses.has(token)) gridView.statuses.delete(token);
+          else gridView.statuses.add(token);
+          saveGridView();
+          renderGrid();
+        });
+        box.appendChild(btn);
+      }
+    }
+
+    // "updated Ns ago", derived from gridData.asOf; ticks on its own interval.
+    function updateUpdatedLabel() {
+      const el = document.getElementById("updated");
+      if (!el) return;
+      if (!gridData || !gridData.asOf) { el.textContent = ""; return; }
+      el.textContent = "updated " + fmtAge(Date.now() - new Date(gridData.asOf).getTime()) + " ago";
     }
 
     function updateSortIndicators() {
@@ -267,10 +333,37 @@
       return (key === "app" || key === "job" || key === "status") ? "asc" : "desc";
     }
 
+    // Auto-refresh: poll refresh() on an interval, but only while the dashboard is
+    // visible (not in a drill-down). Re-render keeps the current view state, so the
+    // operator's sort/group/filter/collapse survive each refresh.
+    let autoRefreshTimer = null;
+    function setAutoRefresh(on) {
+      if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+      if (on) autoRefreshTimer = setInterval(() => {
+        if (!document.getElementById("dashboard").hidden) refresh();
+      }, AUTO_REFRESH_MS);
+    }
+
     function initGridControls() {
       const sel = document.getElementById("group-by");
       sel.value = gridView.groupBy;
       sel.addEventListener("change", () => { gridView.groupBy = sel.value; saveGridView(); renderGrid(); });
+
+      // Free-text filter, debounced so each keystroke doesn't re-render.
+      const search = document.getElementById("grid-search");
+      search.value = gridView.search;
+      let searchTimer = null;
+      search.addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => { gridView.search = search.value.trim(); saveGridView(); renderGrid(); }, 150);
+      });
+
+      // Last-updated label ticks independently of fetches; auto-refresh toggle.
+      setInterval(updateUpdatedLabel, 5000);
+      const auto = document.getElementById("autorefresh");
+      auto.addEventListener("change", () => setAutoRefresh(auto.checked));
+      setAutoRefresh(auto.checked);
+
       document.querySelectorAll("#grid thead th[data-sort-key]").forEach((th) => {
         th.tabIndex = 0;
         th.setAttribute("role", "button");

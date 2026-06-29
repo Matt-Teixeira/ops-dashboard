@@ -112,5 +112,50 @@
     return worst;
   }
 
-  return { STATUS_RANK, sortJobs, groupJobs, groupRollupStatus };
+  /**
+   * Return a NEW array of jobs matching the filter (Phase 9). `search` is a
+   * case-insensitive substring matched against app, job, and runId. `statuses`
+   * is a Set (or array) of tokens; a job matches if its `status` is in the set,
+   * OR the set contains "STALE" and the job's `stale === true` (STALE is the
+   * staleness flag, NOT a status value). An empty search + empty set = all jobs.
+   * Pure: never mutates the input.
+   */
+  function filterJobs(jobs, opts) {
+    const arr = Array.isArray(jobs) ? jobs : [];
+    const o = opts || {};
+    const search = String(o.search || "").trim().toLowerCase();
+    const sel = o.statuses instanceof Set ? o.statuses : new Set(Array.isArray(o.statuses) ? o.statuses : []);
+    if (!search && sel.size === 0) return arr.slice();
+    return arr.filter(function (j) {
+      if (search) {
+        const hay = (String(j.app || "") + " " + String(j.job || "") + " " + String(j.runId || "")).toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      if (sel.size) {
+        const byStatus = sel.has(j.status);
+        const byStale = sel.has("STALE") && j.stale === true;
+        if (!byStatus && !byStale) return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Tally a job set for the summary header (Phase 9): total, per-status counts,
+   * `stale` (stale === true) and `unknown` (stale === null, i.e. no configured
+   * cadence). Computed over the full grid so the chip counts are a stable
+   * overview; the filtered/visible count is reported separately by the caller.
+   */
+  function summarize(jobs) {
+    const arr = Array.isArray(jobs) ? jobs : [];
+    const out = { total: arr.length, ERROR: 0, WARN: 0, SUCCESS: 0, stale: 0, unknown: 0 };
+    for (const j of arr) {
+      if (out[j.status] != null) out[j.status]++;
+      if (j.stale === true) out.stale++;
+      else if (j.stale === null) out.unknown++;
+    }
+    return out;
+  }
+
+  return { STATUS_RANK, sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize };
 });

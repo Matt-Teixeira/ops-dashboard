@@ -8,6 +8,152 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 9 — Grid Filters, Summary & Refresh
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_9_grid_filters.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_9.md`
+
+## Goals
+
+- On top of Phase 8's render pipeline, let an operator narrow and monitor the grid:
+  free-text filter, status chips (incl. STALE), a summary-counts header, and a
+  last-updated / auto-refresh indicator — all still client-side.
+
+## Built
+
+- `public/grid-view.js`: `filterJobs(jobs,{search,statuses})` (case-insensitive
+  app/job/runId match; status-set membership where STALE matches `j.stale===true`,
+  not a status; empty filter = all; accepts a Set or array; never mutates) and
+  `summarize(jobs)` → `{total,ERROR,WARN,SUCCESS,stale,unknown}`.
+- `test/grid-view.test.js`: +11 tests (61 total).
+- `public/index.html`: debounced `#grid-search`; status chips (ERROR/WARN/SUCCESS/
+  STALE) with counts + `aria-pressed`/`.active`, doubling as the summary; a summary
+  line that appends `· showing K` while filtering; a live "updated Ns ago" label off
+  `gridData.asOf` ticking every 5s; an auto-refresh checkbox (default on) polling
+  `refresh()` every `AUTO_REFRESH_MS` (120s) only while the dashboard is visible.
+  `renderGrid()` is now filter → sort → group; `gridView` gains `search` + `statuses`
+  (persisted with the Phase 8 keys).
+
+## Schema Facts Confirmed (live DB)
+
+- None new. No queries touched. Confirmed the live `/api/jobs/latest` payload still
+  exposes `status`, `stale`, `count`, `coverage.unknown`, and `asOf` (24 jobs from
+  the running service; summarize → 14 ERROR / 9 WARN / 1 SUCCESS / 2 stale, which
+  reconciles: 14+9+1 = 24).
+
+## Important Decisions
+
+### Summary counts cover the whole grid, not the filtered set
+
+Decision: the chip/summary counts derive from `gridData.jobs` (all jobs); the
+filtered count is shown separately as `· showing K`.
+
+Reason: the chips double as filter toggles, so their counts must be a stable
+overview ("ERROR 14") that doesn't collapse to 0 as you filter; `ERROR+WARN+SUCCESS`
+always equals the total.
+
+Tradeoff: the summary total and the visible row count differ while a filter is
+active — surfaced explicitly via `showing K` so it isn't mistaken for a miscount.
+
+### Auto-refresh polls no faster than the cache changes
+
+Decision: `AUTO_REFRESH_MS = 120000`, paused while a drill-down is open.
+
+Reason: the grid is served from an in-process cache that only refreshes every server
+`GRID_REFRESH_MS` (≈120s); polling faster just re-fetches identical data.
+
+Tradeoff: a manual `refresh` button remains for an immediate pull.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none — frontend only, no DB code path.
+- Query / partition-pruning impact: none — no query changed; drill-down `at=` hint intact.
+- Performance (request-path latency) impact: none — `/api/jobs/latest` untouched;
+  filtering/summarizing re-render from memory. Auto-refresh polls ≤ once / 120s and
+  only when the dashboard is visible.
+- Security impact: chips/labels built via `textContent`; the search term is only a
+  `String.includes` needle, never injected; `localStorage` holds only view prefs,
+  validated against allowlists with a try/catch fallback.
+- Deployment impact: none — same static-served page + module; no env/port/command change.
+- API / response-shape compatibility impact: none.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+```
+
+Results:
+
+- Passed: 61/61 (50 prior + 11 new filter/summarize tests).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- Inline `index.html` script passes `node --check`.
+- Running container serves the new controls (`#grid-search`, `#status-chips`,
+  `#autorefresh`) and `grid-view.js` exposing `filterJobs`/`summarize`.
+- Live 24-job payload: `summarize` → 14/9/1, stale 2, unknown 0 (reconciles to 24);
+  search "ge_" → 3 rows; ERROR chip → 14; STALE chip → 2; empty filter → 24.
+- Browser-interactive checks (debounced search, chip toggles, "updated Ns ago" tick,
+  auto-refresh preserving view state) rest on the syntax check + unit-tested logic;
+  recommend an eyeball pass.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_9.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Phase 10 (Pending): dedicated read-only Connectivity view over the `alert.*` tables.
+
+## Commit Readiness
+
+- Requirements implemented: yes (filter/search, status chips incl. STALE, summary
+  header, last-updated + auto-refresh; filter precedes grouping).
+- Read-only / least-privilege rules hold: yes (frontend only).
+- Time-windowed queries partition-pruned: n/a (no query changed).
+- Schema assumptions confirmed live: yes (payload fields verified).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (61/61 tests + smoke).
+- Ready to commit: yes.
+
+---
+
 # Phase 8 — Grid Grouping & Sorting
 
 Date:
