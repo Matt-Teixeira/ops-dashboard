@@ -8,6 +8,153 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 15 — Per-System Acquisition History
+
+Date:
+2026-06-29
+
+Status:
+Completed (grant is an operator deploy step; see Validation)
+
+Prompt:
+`prompts/prompt_15_acquisition_systems.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_15.md`
+
+## Goals
+
+- Give data_acquisition the per-system / per-source breakdown its single orchestrator
+  grid row can't show (one run spans ~20 systems): a routed view with per-`system_id`
+  runs/failed over a window + a per-source (hhm/mmb) rollup, from the purpose-built
+  history table. Read-only.
+
+## Built
+
+- `db/setup-readonly-role.sql`: `USAGE ON SCHEMA stats` + `SELECT ON
+  stats.acquisition_history` — the third read outside `util` — applied fail-closed
+  (REVOKE + GRANT + verify `DO` block) like the Phase 10 alert grant.
+- `db/queries.js`: `ACQ_SYSTEMS_SQL` + `acquisitionSystems()`. Per
+  `(system_id, data_source)` over `inserted_at > $1`: runs, failed (NOT
+  successful_acquisition), max(modality/manufacturer), max(inserted_at) ISO last_seen;
+  ORDER BY failed DESC. No verbose_log, no join.
+- `lib/acq.js` (pure): `shapeSystems` + `summarizeBySource`. `test/acq.test.js` +5
+  (91 total) incl. a SQL guard.
+- `server.js`: `GET /api/acquisition/systems` (clamped window, default
+  `ACQ_WINDOW_HOURS`=24) → `{windowHours, asOf, count, bySource, systems}`.
+- `public/index.html`: routed `#acq-systems` view via the data_acquisition group
+  header "systems ›"; per-source rollup + worst-first per-system table.
+- Docs: ARCHITECTURE_PRINCIPLES (3rd grant + fail-closed), DEPLOYMENT, `.env.example`,
+  ENVIRONMENT (`ACQ_WINDOW_HOURS`).
+
+## Schema Facts Confirmed (live DB)
+
+- `stats.acquisition_history`: ~447k rows, NOT partitioned, BRIN on `inserted_at` +
+  `(system_id, inserted_at DESC)` btree. `EXPLAIN` of the windowed aggregate uses the
+  BRIN (`Bitmap Index Scan on idx_acq_hist_inserted_brin`), not a full scan; no
+  verbose_log.
+- 24h: ~18k rows, 333 systems, ~7k failed (~39%); `system_id`/`data_source` always
+  present, `modality`/`manufacturer` ~82% blank (so per-system axis + source rollup).
+
+## Important Decisions
+
+### Per-(system, data_source) axis; modality is a column
+
+Decision: group by `(system_id, data_source)`; show modality/manufacturer as (sparse)
+columns; roll up by source (hhm/mmb).
+
+Reason: system_id and data_source are always populated; modality is blank ~82% of the
+time, so it can't be the axis.
+
+Tradeoff: a system that does both hhm and mmb appears as two rows — informative, not a
+bug.
+
+### Bounded by BRIN, not partitioning; not cached
+
+Decision: a direct request-path query bounded by `inserted_at` via the BRIN index, not
+cached.
+
+Reason: the table isn't partitioned, but the BRIN makes a windowed scan cheap; result
+is bounded by system count (~333). Same direct-query posture as connectivity/run-log.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: EXPANDS the RO role to a third schema (`stats`),
+  SELECT on exactly `stats.acquisition_history`, fail-closed/verified. No writes.
+- Query / partition-pruning impact: table unpartitioned; windowed scan BRIN-bounded
+  (EXPLAIN-confirmed); no verbose_log, no join.
+- Performance impact: bounded request-path aggregate (~18k rows scanned in 24h ->
+  ~333 groups); not cached.
+- Security impact: missing grant -> sanitized 500; window clamped; text via textContent.
+- Deployment impact: **two-step** — apply the `stats` grant (superuser) + restart, else
+  `/api/acquisition/systems` 500s.
+- API / response-shape compatibility impact: additive (`/api/acquisition/systems` new).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 91/91
+EXPLAIN ACQ_SYSTEMS_SQL                                    # BRIN bitmap scan, no full scan, no verbose_log
+```
+
+Results:
+
+- Passed: 91/91 (86 prior + 5 new `acq`); all changed files parse.
+- Failed: none.
+- Not run: **live `/api/acquisition/systems` smoke** — blocked on the `stats` grant
+  being applied by a superuser + a container restart (the documented two-step deploy).
+
+Manual / smoke tests:
+
+- EXPLAIN confirmed BRIN-bounded windowed aggregate (no 447k full scan, no verbose_log).
+- Inline `index.html` passes `node --check`.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_15.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Apply the `stats` grant (superuser) + restart, then run the live smoke and record it.
+- Optional (deferred): a per-run drill-down link from a system's row into the specific
+  `util.app_run_logs` run (`run_id` is available in the table).
+
+## Commit Readiness
+
+- Requirements implemented: yes (grant, query, lib, endpoint, view, docs).
+- Read-only / least-privilege rules hold: yes (SELECT-only third grant, fail-closed).
+- Time-windowed queries partition-pruned: BRIN-bounded (table unpartitioned); confirmed.
+- Schema assumptions confirmed live: yes (plan, volume, field coverage).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (91/91 + EXPLAIN); live smoke pending the grant deploy.
+- Ready to commit: yes (live smoke to follow at deploy).
+
+---
+
 # Phase 14 — Connectivity Polish
 
 Date:

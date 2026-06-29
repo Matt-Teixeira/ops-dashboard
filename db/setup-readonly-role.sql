@@ -5,17 +5,19 @@
 --     -f db/setup-readonly-role.sql
 --
 -- The dashboard is read-only, so its credential should be too. This role can
--- ONLY connect and SELECT from util.app_run_logs and the two alert.* connectivity
--- tables -- no writes, no DDL, no other tables. Reads of util.app_run_logs go
--- through the partitioned parent, so a single SELECT grant on the parent also
--- covers existing and future monthly partitions.
+-- ONLY connect and SELECT from util.app_run_logs, the two alert.* connectivity
+-- tables, and stats.acquisition_history -- no writes, no DDL, no other tables. Reads
+-- of util.app_run_logs go through the partitioned parent, so a single SELECT grant on
+-- the parent also covers existing and future monthly partitions.
 --
 -- Phase 10 added the first read OUTSIDE schema util: the connectivity panel selects
 -- the latest per-system state from alert.offline_hhm_conn / alert.offline_mmb_conn
--- (one upserted row per system_id; written by data_acquisition). Still SELECT-only.
--- This file is idempotent; re-run it (as a superuser) to apply the new grants
--- BEFORE deploying the Phase 10 code, or /api/connectivity returns 500
--- (permission denied for schema alert). See markdown/DEPLOYMENT.md.
+-- (one upserted row per system_id; written by data_acquisition). Phase 15 added the
+-- third read surface: stats.acquisition_history (data_acquisition's per-run/per-system
+-- history) for the per-system acquisition view. All still SELECT-only.
+-- This file is idempotent; re-run it (as a superuser) to apply new grants BEFORE
+-- deploying the code that needs them, or the new endpoint returns 500
+-- (permission denied for schema alert/stats). See markdown/DEPLOYMENT.md.
 
 \set ON_ERROR_STOP on
 
@@ -76,6 +78,36 @@ BEGIN
   END IF;
   IF has_schema_privilege('ops_dashboard_ro', 'alert', 'CREATE') THEN
     RAISE EXCEPTION 'ops_dashboard_ro unexpectedly has CREATE on schema alert';
+  END IF;
+END $$;
+
+-- Per-system acquisition history (Phase 15): the third read outside schema util.
+-- SELECT-only on exactly stats.acquisition_history (data_acquisition's per-run,
+-- per-system history). Same fail-closed pattern as the alert grant above.
+REVOKE ALL ON ALL TABLES IN SCHEMA stats FROM ops_dashboard_ro;
+REVOKE ALL ON SCHEMA stats               FROM ops_dashboard_ro;
+
+GRANT USAGE   ON SCHEMA stats                  TO ops_dashboard_ro;
+GRANT SELECT  ON stats.acquisition_history     TO ops_dashboard_ro;
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  SELECT string_agg(n.nspname || '.' || c.relname || ':' || priv, ', ' ORDER BY c.relname, priv)
+    INTO bad
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) AS priv
+  WHERE n.nspname = 'stats'
+    AND c.relkind IN ('r','p','v','m','f')
+    AND has_table_privilege('ops_dashboard_ro', c.oid, priv)
+    AND NOT (c.relname = 'acquisition_history' AND priv = 'SELECT');
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'ops_dashboard_ro has unexpected privileges in schema stats: %', bad;
+  END IF;
+  IF has_schema_privilege('ops_dashboard_ro', 'stats', 'CREATE') THEN
+    RAISE EXCEPTION 'ops_dashboard_ro unexpectedly has CREATE on schema stats';
   END IF;
 END $$;
 

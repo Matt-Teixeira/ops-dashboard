@@ -10,6 +10,7 @@ const runs = require("./lib/runs");
 const staleness = require("./lib/staleness");
 const connectivity = require("./lib/connectivity");
 const appRunsLib = require("./lib/app-runs");
+const acq = require("./lib/acq");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
@@ -17,6 +18,7 @@ const APP_RUNS_LOOKBACK_HOURS = Number(process.env.APP_RUNS_LOOKBACK_HOURS || 24
 const APP_RUNS_LIMIT = Number(process.env.APP_RUNS_LIMIT || 200);
 const APP_HEALTH_WINDOW_HOURS = Number(process.env.APP_HEALTH_WINDOW_HOURS || 24);
 const APP_HEALTH_WINDOW_MS = APP_HEALTH_WINDOW_HOURS * 60 * 60 * 1000;
+const ACQ_WINDOW_HOURS = Number(process.env.ACQ_WINDOW_HOURS || 24);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
@@ -209,6 +211,27 @@ function buildApp() {
         endedAt,
         durationMs,
         events: row.verbose_log,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-system acquisition history (Phase 15): data_acquisition's recent acquisitions
+  // broken down by (system_id, data_source) over a window, with a per-source rollup.
+  // Reads stats.acquisition_history (BRIN-bounded on inserted_at, no verbose_log/join);
+  // a missing stats grant surfaces as the shared sanitized 500.
+  app.get("/api/acquisition/systems", async (req, res, next) => {
+    try {
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, ACQ_WINDOW_HOURS, 1, 720);
+      const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+      const rows = await queries.acquisitionSystems(since);
+      res.json({
+        windowHours,
+        asOf: new Date().toISOString(),
+        count: rows.length,
+        bySource: acq.summarizeBySource(rows),
+        systems: acq.shapeSystems(rows),
       });
     } catch (err) {
       next(err);

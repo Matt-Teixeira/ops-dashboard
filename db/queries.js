@@ -188,6 +188,33 @@ function appHealth(sinceIso) {
   return db.any(APP_HEALTH_SQL, [sinceIso]);
 }
 
+// Per-system acquisition history (Phase 15): data_acquisition's recent acquisitions
+// broken down by (system_id, data_source) over a window. Source is
+// stats.acquisition_history (one row per run-per-system; the alert.* tables are this
+// data's current-state snapshot). system_id and data_source are always present;
+// modality/manufacturer are sparse (a column, not the axis). Bounded by `inserted_at
+// > $1` -- the table isn't partitioned but has a BRIN on inserted_at, so a windowed
+// scan does not read all ~447k rows. No verbose_log, no join. inserted_at is emitted
+// as a full ISO string for last_seen. Ordered worst-first (most failures).
+const ACQ_SYSTEMS_SQL = `
+SELECT
+  system_id,
+  data_source,
+  max(manufacturer) AS manufacturer,
+  max(modality)     AS modality,
+  count(*)::int                                                       AS runs,
+  count(*) FILTER (WHERE NOT successful_acquisition)::int             AS failed,
+  to_char(max(inserted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen
+FROM stats.acquisition_history
+WHERE inserted_at > $1::timestamptz
+GROUP BY system_id, data_source
+ORDER BY failed DESC, runs DESC, system_id;
+`;
+
+function acquisitionSystems(sinceIso) {
+  return db.any(ACQ_SYSTEMS_SQL, [sinceIso]);
+}
+
 function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, statusFilter = "all") {
   return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
 }
@@ -207,4 +234,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, ping };

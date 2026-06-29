@@ -26,6 +26,7 @@ contract with safe placeholders.
 | `APP_RUNS_LOOKBACK_HOURS` | Per-app run-log default window (hours) | default `24`; clamped `1..720` per request. `GET /api/apps/:app/runs`, partition-pruned, not cached |
 | `APP_RUNS_LIMIT` | Per-app run-log page size | default `200`; clamped `1..500` per request; keyset-paginated via `before`/`beforeId` |
 | `APP_HEALTH_WINDOW_HOURS` | Per-app recent-run health window (hours) | default `24`; cheap `warn_error_logs`-only per-app runs/errored/warned aggregate on the grid refresh timer; additive to `/api/jobs/latest` (`appHealth`) and shown on the app group header |
+| `ACQ_WINDOW_HOURS` | Per-system acquisition view window (hours) | default `24`; clamped `1..720`; `GET /api/acquisition/systems` over `stats.acquisition_history` (BRIN-bounded). Needs the `stats` grant in `db/setup-readonly-role.sql` |
 | `SELF_LOG_ENABLED` | Self-monitoring on/off | default `false` (read-only). `true` writes a heartbeat run via the writer role |
 | `SELF_LOG_INTERVAL_MS` | Heartbeat interval | default `300000` (5 min); must align with the `ops-dashboard/heartbeat` cadence in `config/schedules.js` |
 | `PG_WRITER_USER` | Writer role | `ops_dashboard_rw` — EXECUTE-only on `ops.log_ops_dashboard_run`; created by `db/setup-writer-role.sql`. No fallback chain |

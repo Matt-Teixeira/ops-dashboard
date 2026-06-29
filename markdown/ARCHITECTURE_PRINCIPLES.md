@@ -73,12 +73,18 @@ path.
 ## Least-Privilege Rule
 
 The dashboard connects as a dedicated read-only role (`ops_dashboard_ro`). Its
-grants are `CONNECT`, `USAGE ON SCHEMA util`, `SELECT ON util.app_run_logs`, and —
-added in Phase 10, the first read outside `util` — `USAGE ON SCHEMA alert` plus
-`SELECT` on exactly `alert.offline_hhm_conn` and `alert.offline_mmb_conn`. Nothing
-else: no other object in either schema, no writes, no DDL. Never ship the app
-pointed at a superuser. Role setup lives in `db/setup-readonly-role.sql` (idempotent;
-re-run as a superuser to apply new grants before deploying code that needs them).
+grants are `CONNECT`, `USAGE ON SCHEMA util`, `SELECT ON util.app_run_logs`; — added
+in Phase 10, the first read outside `util` — `USAGE ON SCHEMA alert` + `SELECT` on
+exactly `alert.offline_hhm_conn` / `alert.offline_mmb_conn`; and — added in Phase 15,
+the third read surface — `USAGE ON SCHEMA stats` + `SELECT` on exactly
+`stats.acquisition_history`. Nothing else: no other object in any schema, no writes,
+no DDL. Each non-`util` grant is applied **fail-closed** (the setup script REVOKEs the
+role's schema/table privileges, re-grants only the intended SELECTs, then a `DO` block
+RAISEs if any other effective privilege — incl. via PUBLIC/membership — or schema
+CREATE remains), so re-running the script *proves* the surface rather than just adding
+to it. Never ship the app pointed at a superuser. Role setup lives in
+`db/setup-readonly-role.sql` (idempotent; re-run as a superuser to apply new grants
+before deploying code that needs them).
 
 ## House-Style Rule
 
