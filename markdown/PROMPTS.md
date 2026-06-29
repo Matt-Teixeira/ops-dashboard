@@ -62,7 +62,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 5 | `prompt_5_run_drilldown_ui.txt` | Completed | Frontend-only run drill-down: in-page hash router + event timeline over `/api/runs/:run_id`, reached from the grid and error feed. See PHASE_LOG. |
 | 6 | `prompt_6_real_schedules.txt` | Completed | Confirmed cron cadences + provenance; added 15 Philips variants; SIEMENS_CV left unknown; (default) stall budget; coverage surface (API + UI). See PHASE_LOG. |
 | 7 | `prompt_7_self_monitoring.txt` | Completed | Opt-in heartbeat under `app_name = "ops-dashboard"` via a DB-enforced writer; appears in its own grid. See PHASE_LOG. |
-| 8 | `prompt_8_grid_grouping_sort.txt` | Pending | Client-side grid grouping (app/job/none, collapsible) + sortable columns incl. last-run datetime; pure transforms extracted to `lib/grid-view.js`. Frontend-only, additive. |
+| 8 | `prompt_8_grid_grouping_sort.txt` | Completed | Client-side grid grouping (app/job/none, collapsible) + sortable columns incl. last-run datetime; pure transforms in `public/grid-view.js` (browser-served, not `lib/`). Frontend-only, additive. See PHASE_LOG. |
 | 9 | `prompt_9_grid_filters.txt` | Pending | Filter/search box + status chips (incl. STALE) + summary-counts header + last-updated/auto-refresh; builds on the Phase 8 render pipeline. Frontend-only. |
 | 10 | `prompt_10_connectivity_panel.txt` | Pending | Dedicated read-only Connectivity view over `alert.offline_hhm_conn`/`offline_mmb_conn` (latest per-system state, offline-first); expands `ops_dashboard_ro` with SELECT on schema `alert` — the first read outside `util`. |
 

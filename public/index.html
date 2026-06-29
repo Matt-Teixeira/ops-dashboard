@@ -37,6 +37,18 @@
     .run-meta dd { margin: 0; font-variant-numeric: tabular-nums; }
     .run-msg { margin: 1rem 0; font-size: .9rem; }
     .cap-note { margin: .8rem 0; }
+    /* Grid controls + grouping/sorting (Phase 8). */
+    .controls { display: flex; gap: .8rem; align-items: center; margin: .4rem 0 .6rem; font-size: .8rem; color: #888; }
+    .controls select { font: inherit; }
+    th[data-sort-key] { cursor: pointer; user-select: none; }
+    th[data-sort-key]:hover { color: #aaa; }
+    th .sort-ind { margin-left: .25rem; font-size: .7rem; }
+    tr.group-head { cursor: pointer; }
+    tr.group-head:hover td { background: #8882; }
+    tr.group-head td { background: #8881; font-weight: 600; }
+    tr.group-head .disclosure { display: inline-block; width: 1em; color: #888; }
+    tr.group-head .grp-count { color: #888; font-weight: 400; margin-left: .4rem; }
+    tr.group-head .badge { margin-left: .5rem; }
   </style>
 </head>
 <body>
@@ -47,9 +59,21 @@
   <div id="dashboard">
     <section>
       <h2 style="font-size:.95rem">Job grid</h2>
+      <div class="controls">
+        <label>Group by
+          <select id="group-by">
+            <option value="app">App</option>
+            <option value="job">Job</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+        <span class="muted">click a column to sort &middot; a group header to collapse</span>
+      </div>
       <table id="grid"><thead><tr>
-        <th>App</th><th>Job</th><th>Status</th><th>Last run</th><th>Age</th>
-        <th>Duration</th><th>Issues</th><th>Run id</th>
+        <th data-sort-key="app">App</th><th data-sort-key="job">Job</th>
+        <th data-sort-key="status">Status</th><th data-sort-key="lastRun">Last run</th>
+        <th data-sort-key="age">Age</th><th data-sort-key="duration">Duration</th>
+        <th data-sort-key="issues">Issues</th><th>Run id</th>
       </tr></thead><tbody></tbody></table>
     </section>
 
@@ -64,6 +88,8 @@
   <!-- Run drill-down view: one run's event timeline. Populated by showRun(). -->
   <section id="run-view" hidden></section>
 
+  <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
+  <script src="grid-view.js"></script>
   <script>
     const fmtAge = (ms) => {
       if (ms == null) return "—";
@@ -77,6 +103,44 @@
     const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
     const cell = (text, cls) => { const td = document.createElement("td"); if (cls) td.className = cls; td.textContent = text; return td; };
 
+    // --- job grid: fetch once, render from memory on every control change -----
+    // Rendering is decoupled from fetch: changing the group-by, a column sort, or
+    // a group's collapsed state re-renders gridData with no network request. The
+    // view state is persisted so a refresh keeps the operator's layout. (Phase 8)
+
+    const GRID_COLS = 8;
+    const GRID_VIEW_KEY = "ops-grid-view";
+    const GROUP_OPTS = ["app", "job", "none"];
+    const SORT_KEYS = ["app", "job", "status", "lastRun", "age", "duration", "issues"];
+    let gridData = null; // last /api/jobs/latest payload
+    const gridView = loadGridView();
+
+    function loadGridView() {
+      const def = { groupBy: "app", sortKey: "lastRun", sortDir: "desc" };
+      try {
+        const s = JSON.parse(localStorage.getItem(GRID_VIEW_KEY) || "{}");
+        return {
+          groupBy: GROUP_OPTS.includes(s.groupBy) ? s.groupBy : def.groupBy,
+          sortKey: SORT_KEYS.includes(s.sortKey) ? s.sortKey : def.sortKey,
+          sortDir: s.sortDir === "asc" || s.sortDir === "desc" ? s.sortDir : def.sortDir,
+          collapsed: new Set(Array.isArray(s.collapsed) ? s.collapsed : []),
+        };
+      } catch {
+        return { ...def, collapsed: new Set() };
+      }
+    }
+
+    function saveGridView() {
+      try {
+        localStorage.setItem(GRID_VIEW_KEY, JSON.stringify({
+          groupBy: gridView.groupBy,
+          sortKey: gridView.sortKey,
+          sortDir: gridView.sortDir,
+          collapsed: Array.from(gridView.collapsed),
+        }));
+      } catch { /* storage unavailable -> view state stays in memory only */ }
+    }
+
     async function loadGrid() {
       const res = await fetch("/api/jobs/latest");
       const r = await res.json();
@@ -85,40 +149,141 @@
         setTimeout(loadGrid, 3000);
         return;
       }
+      gridData = r;
       const asOf = r.asOf ? new Date(r.asOf).toLocaleTimeString() : "—";
       const unknownCadence = r.coverage && r.coverage.unknown ? ` · ${r.coverage.unknown} cadence unknown` : "";
       document.getElementById("meta").textContent =
         `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOf}` + unknownCadence + (r.stale ? ` · ⚠ ${r.stale}` : "");
+      renderGrid();
+    }
+
+    // Status cell with the run-status badge plus the STALE / "? CADENCE" markers.
+    function jobStatusCell(j) {
+      const st = cell("");
+      const badge = document.createElement("span");
+      badge.className = "badge " + j.status;
+      badge.textContent = j.status;
+      st.appendChild(badge);
+      if (j.stale) { const s = document.createElement("span"); s.className = "badge stale"; s.textContent = "STALE"; s.style.marginLeft = ".3rem"; st.appendChild(s); }
+      // stale === null: no configured cadence. Mark it so an unknown job is never
+      // mistaken for a healthy one (its run-status badge alone could read "green").
+      else if (j.stale === null) { const u = document.createElement("span"); u.className = "badge unknown"; u.textContent = "? CADENCE"; u.title = "no configured cadence — staleness unknown"; u.style.marginLeft = ".3rem"; st.appendChild(u); }
+      return st;
+    }
+
+    function jobRow(j) {
+      const tr = document.createElement("tr");
+      tr.appendChild(cell(j.app));
+      tr.appendChild(cell(j.job));
+      tr.appendChild(jobStatusCell(j));
+      tr.appendChild(cell(fmtTime(j.lastRun)));
+      tr.appendChild(cell(fmtAge(j.ageMs), "num"));
+      tr.appendChild(cell(fmtDur(j.durationMs), "num"));
+      tr.appendChild(cell(j.issueCount, "num"));
+      const idCell = document.createElement("td");
+      const link = document.createElement("a");
+      // Open the drill-down view, passing inserted_at as the hint (`at`) so the
+      // run query prunes to one partition.
+      link.href = runHref(j.runId, j.lastRun);
+      link.textContent = j.runId;
+      idCell.appendChild(link);
+      tr.appendChild(idCell);
+      return tr;
+    }
+
+    // A collapsible group header: disclosure glyph, label, row count, and a
+    // roll-up badge = the worst status in the group.
+    function groupHeadRow(group) {
+      const collapsed = gridView.collapsed.has(group.key);
+      const tr = document.createElement("tr");
+      tr.className = "group-head";
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.setAttribute("aria-expanded", String(!collapsed));
+      const td = document.createElement("td");
+      td.colSpan = GRID_COLS;
+      const disc = document.createElement("span");
+      disc.className = "disclosure";
+      disc.textContent = collapsed ? "▸" : "▾";
+      td.appendChild(disc);
+      td.appendChild(document.createTextNode(group.key));
+      const cnt = document.createElement("span");
+      cnt.className = "grp-count";
+      cnt.textContent = "(" + group.rows.length + ")";
+      td.appendChild(cnt);
+      const status = GridView.groupRollupStatus(group.rows);
+      const b = document.createElement("span");
+      b.className = "badge " + status;
+      b.textContent = status;
+      td.appendChild(b);
+      tr.appendChild(td);
+      const toggle = () => {
+        if (gridView.collapsed.has(group.key)) gridView.collapsed.delete(group.key);
+        else gridView.collapsed.add(group.key);
+        saveGridView();
+        renderGrid();
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+      return tr;
+    }
+
+    function renderGrid() {
+      if (!gridData) return;
+      updateSortIndicators();
       const tb = document.querySelector("#grid tbody");
       tb.innerHTML = "";
-      for (const j of r.jobs) {
-        const tr = document.createElement("tr");
-        tr.appendChild(cell(j.app));
-        tr.appendChild(cell(j.job));
-        const st = cell("");
-        const badge = document.createElement("span");
-        badge.className = "badge " + j.status;
-        badge.textContent = j.status;
-        st.appendChild(badge);
-        if (j.stale) { const s = document.createElement("span"); s.className = "badge stale"; s.textContent = "STALE"; s.style.marginLeft = ".3rem"; st.appendChild(s); }
-        // stale === null: no configured cadence. Mark it so an unknown job is never
-        // mistaken for a healthy one (its run-status badge alone could read "green").
-        else if (j.stale === null) { const u = document.createElement("span"); u.className = "badge unknown"; u.textContent = "? CADENCE"; u.title = "no configured cadence — staleness unknown"; u.style.marginLeft = ".3rem"; st.appendChild(u); }
-        tr.appendChild(st);
-        tr.appendChild(cell(fmtTime(j.lastRun)));
-        tr.appendChild(cell(fmtAge(j.ageMs), "num"));
-        tr.appendChild(cell(fmtDur(j.durationMs), "num"));
-        tr.appendChild(cell(j.issueCount, "num"));
-        const idCell = document.createElement("td");
-        const link = document.createElement("a");
-        // Open the drill-down view, passing inserted_at as the hint (`at`) so the
-        // run query prunes to one partition.
-        link.href = runHref(j.runId, j.lastRun);
-        link.textContent = j.runId;
-        idCell.appendChild(link);
-        tr.appendChild(idCell);
-        tb.appendChild(tr);
+      const sorted = GridView.sortJobs(gridData.jobs || [], gridView.sortKey, gridView.sortDir);
+      const groups = GridView.groupJobs(sorted, gridView.groupBy);
+      const grouped = gridView.groupBy === "app" || gridView.groupBy === "job";
+      const frag = document.createDocumentFragment();
+      for (const g of groups) {
+        if (grouped) {
+          frag.appendChild(groupHeadRow(g));
+          if (gridView.collapsed.has(g.key)) continue; // collapsed -> hide member rows
+        }
+        for (const j of g.rows) frag.appendChild(jobRow(j));
       }
+      tb.appendChild(frag);
+    }
+
+    function updateSortIndicators() {
+      document.querySelectorAll("#grid thead th[data-sort-key]").forEach((th) => {
+        let ind = th.querySelector(".sort-ind");
+        if (th.dataset.sortKey === gridView.sortKey) {
+          if (!ind) { ind = document.createElement("span"); ind.className = "sort-ind"; th.appendChild(ind); }
+          ind.textContent = gridView.sortDir === "asc" ? "▲" : "▼";
+          th.setAttribute("aria-sort", gridView.sortDir === "asc" ? "ascending" : "descending");
+        } else {
+          if (ind) ind.remove();
+          th.removeAttribute("aria-sort");
+        }
+      });
+    }
+
+    // First click on a column picks a sensible default direction; text sorts and
+    // worst-first status read more naturally ascending, magnitudes descending.
+    function defaultDir(key) {
+      return (key === "app" || key === "job" || key === "status") ? "asc" : "desc";
+    }
+
+    function initGridControls() {
+      const sel = document.getElementById("group-by");
+      sel.value = gridView.groupBy;
+      sel.addEventListener("change", () => { gridView.groupBy = sel.value; saveGridView(); renderGrid(); });
+      document.querySelectorAll("#grid thead th[data-sort-key]").forEach((th) => {
+        th.tabIndex = 0;
+        th.setAttribute("role", "button");
+        const key = th.dataset.sortKey;
+        const apply = () => {
+          if (gridView.sortKey === key) gridView.sortDir = gridView.sortDir === "asc" ? "desc" : "asc";
+          else { gridView.sortKey = key; gridView.sortDir = defaultDir(key); }
+          saveGridView();
+          renderGrid();
+        };
+        th.addEventListener("click", apply);
+        th.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); apply(); } });
+      });
     }
 
     async function loadErrors() {
@@ -346,6 +511,7 @@
 
     document.getElementById("refresh").addEventListener("click", refresh);
     window.addEventListener("hashchange", route);
+    initGridControls();
     route();
   </script>
 </body>

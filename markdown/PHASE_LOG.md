@@ -8,6 +8,158 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 8 — Grid Grouping & Sorting
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_8_grid_grouping_sort.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_8.md`
+
+## Goals
+
+- Let an operator organize the job grid client-side: group by app / job / none with
+  collapsible groups, and sort any column — headline being sort by last-run datetime.
+- Do it with zero backend change, re-rendering from the payload already in memory.
+
+## Built
+
+- `public/grid-view.js` (new): pure, DOM-free transforms — `sortJobs(jobs,key,dir)`,
+  `groupJobs(jobs,by)`, `groupRollupStatus(rows)`, shared `STATUS_RANK`
+  {ERROR:0,WARN:1,SUCCESS:2,INFO:3}. Nulls sort last in both directions; status sort
+  is worst-first with an app/job tiebreak; never mutates input. Dual export
+  (browser `window.GridView` + Node `require`).
+- `test/grid-view.test.js` (new): +17 tests (50 total).
+- `public/index.html`: `loadGrid()` split into fetch → store `gridData` →
+  `renderGrid()`, so group/sort/collapse changes re-render from memory with no
+  refetch. Added a group-by selector, clickable sortable headers (▲/▼ + `aria-sort`,
+  keyboard-operable), collapsible group-head rows with a worst-status roll-up badge,
+  and a `gridView` state object persisted to `localStorage` (`ops-grid-view`). CSS in
+  the existing `<style>`. Server-side sort (`server.js:119`) left untouched.
+
+## Schema Facts Confirmed (live DB)
+
+- None new. This phase touched no queries. Confirmed the live `/api/jobs/latest`
+  payload still carries the fields the client sorts/groups on (`app, job, runId,
+  lastRun, startedAt, endedAt, durationMs, status, issueCount, ageMs, stale`) — 24
+  jobs returned from the running service.
+
+## Important Decisions
+
+### Browser module lives in public/, not lib/
+
+Decision: the pure transforms ship as `public/grid-view.js`, not `lib/grid-view.js`
+as the prompt suggested.
+
+Reason: `server.js` serves static files only from `public/`. Placing the module there
+loads it via a plain `<script src>` with no build step; mounting `lib/` statically
+would expose server-only modules (run-cache, self-log, pg-*) to the browser.
+
+Tradeoff: the file sits beside the page it serves rather than next to the other pure
+libs; mitigated by keeping it dependency-free and unit-tested from `test/`.
+
+### Full re-render on control change (no partial DOM toggle)
+
+Decision: group/sort/collapse rebuild the grid `<tbody>` from `gridData`.
+
+Reason: simpler and demonstrably correct; the grid is tens of rows, so a rebuild is
+instant. Crucially it is still **render-from-memory** — no refetch.
+
+Tradeoff: marginally more DOM churn than toggling `hidden`; negligible at this scale.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none — frontend only, no DB code path added.
+- Query / partition-pruning impact: none — no query changed; drill-down links still
+  carry the `at=` (inserted_at) hint so the run query still prunes.
+- Performance (request-path latency) impact: none — `/api/jobs/latest` untouched
+  (~3ms); control changes re-render client-side with no network call.
+- Security impact: all payload-derived text rendered via `textContent`/`createTextNode`
+  (no innerHTML); `localStorage` holds only view prefs; inputs validated against
+  allowlists with try/catch fallback.
+- Deployment impact: none — same static-served single page plus one new static asset
+  (`grid-view.js`); no env, port, or command change.
+- API / response-shape compatibility impact: none — no endpoint or response changed.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+```
+
+Results:
+
+- Passed: 50/50 (33 prior + 17 new `grid-view` tests).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- `/grid-view.js` served (200) and exposes `STATUS_RANK,sortJobs,groupJobs,groupRollupStatus`.
+- `/api/jobs/latest` returns 24 jobs with the expected keys (unchanged shape).
+- Inline `index.html` script passes `node --check` (no syntax error).
+- The real 24-job payload run through `sortJobs`/`groupJobs`/`groupRollupStatus`:
+  groups by app with correct counts + roll-ups (data_acquisition→ERROR, ge→WARN),
+  status-asc surfaces ERRORs first, duration-desc keeps nulls last, group=none → one
+  group of 24.
+- Browser-interactive checks (click-to-sort, collapse/expand, localStorage persist)
+  rest on the syntax check + the unit-tested pure logic; recommend an eyeball pass.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_8.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- Problem: static serving is `public/`-only, but the prompt put the shared module in
+  `lib/`.
+  Resolution: hosted it at `public/grid-view.js` (dual-export) — browser-served and
+  Node-testable — rather than statically exposing all of `lib/`.
+
+## Follow-Up Tasks
+
+- Phase 9 (Pending): filter/search box, status chips, summary-counts header,
+  last-updated/auto-refresh — builds on this render pipeline.
+
+## Commit Readiness
+
+- Requirements implemented: yes (grouping, collapse, sortable columns incl. last-run
+  datetime, extracted pure module + tests).
+- Read-only / least-privilege rules hold: yes (frontend only).
+- Time-windowed queries partition-pruned: n/a (no query changed; drill-down hint kept).
+- Schema assumptions confirmed live: yes (payload shape verified against the service).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (50/50 tests + smoke).
+- Ready to commit: yes.
+
+---
+
 # Phase 7 — Self-Monitoring
 
 Date:
