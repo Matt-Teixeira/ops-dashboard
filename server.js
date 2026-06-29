@@ -15,6 +15,8 @@ const { createRunCache } = require("./lib/run-cache");
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
 const APP_RUNS_LOOKBACK_HOURS = Number(process.env.APP_RUNS_LOOKBACK_HOURS || 24);
 const APP_RUNS_LIMIT = Number(process.env.APP_RUNS_LIMIT || 200);
+const APP_HEALTH_WINDOW_HOURS = Number(process.env.APP_HEALTH_WINDOW_HOURS || 24);
+const APP_HEALTH_WINDOW_MS = APP_HEALTH_WINDOW_HOURS * 60 * 60 * 1000;
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
@@ -43,6 +45,9 @@ let lastError = null;
 let lastRefreshMs = null; // duration of the last successful refresh (for the heartbeat)
 let refreshing = false;
 let lastReconcileAt = 0; // epoch ms of the last full-retention scan
+// Phase 12: per-app recent-run health { <app>: { runs, errored, warned } }, refreshed
+// on the same timer. Additive to the grid response; last-good kept if a refresh fails.
+let appHealthMap = {};
 
 // One driver for three phases:
 //   - bootstrap: cache not ready yet -> scan the full retention window.
@@ -61,19 +66,33 @@ async function refreshOnce(now = new Date()) {
   const full = !cache.ready || now.getTime() - lastReconcileAt >= SUMMARY_RECONCILE_MS;
   const phase = !cache.ready ? "bootstrap" : full ? "reconcile" : "tick";
   try {
-    const since = full ? new Date(now.getTime() - RETENTION_MS) : cache.sinceBound(now);
-    const rows = await queries.jobsLatestSince(since.toISOString());
-    cache.merge(rows, now);
-    cache.markReady();
-    if (full) lastReconcileAt = now.getTime();
-    asOf = new Date().toISOString();
-    lastRefreshMs = Date.now() - started;
-    lastError = null;
-    const cov = staleness.coverage(cache.values().map((r) => ({ app: r.app_name, job: r.job })));
-    console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms; cadence unknown: ${cov.unknown}/${cov.total}${cov.unknown ? ` (${cov.unknownJobs.join(", ")})` : ""}`);
-  } catch (err) {
-    lastError = err.message; // keep last-good cache; watermark not advanced on failure
-    console.error(`[ops-dashboard] grid ${phase} failed:`, err.message);
+    try {
+      const since = full ? new Date(now.getTime() - RETENTION_MS) : cache.sinceBound(now);
+      const rows = await queries.jobsLatestSince(since.toISOString());
+      cache.merge(rows, now);
+      cache.markReady();
+      if (full) lastReconcileAt = now.getTime();
+      asOf = new Date().toISOString();
+      lastRefreshMs = Date.now() - started;
+      lastError = null;
+      const cov = staleness.coverage(cache.values().map((r) => ({ app: r.app_name, job: r.job })));
+      console.log(`[ops-dashboard] grid ${phase}: ${rows.length} rows -> ${cache.size} jobs (since ${since.toISOString()}) in ${Date.now() - started}ms; cadence unknown: ${cov.unknown}/${cov.total}${cov.unknown ? ` (${cov.unknownJobs.join(", ")})` : ""}`);
+    } catch (err) {
+      lastError = err.message; // keep last-good cache; watermark not advanced on failure
+      console.error(`[ops-dashboard] grid ${phase} failed:`, err.message);
+    }
+    // Per-app recent-run health (Phase 12): cheap warn_error_logs-only aggregate over
+    // a short window. Its own try/catch -- a failure here keeps the last-good map and
+    // must never blank the grid above.
+    try {
+      const healthSince = new Date(now.getTime() - APP_HEALTH_WINDOW_MS).toISOString();
+      const rows = await queries.appHealth(healthSince);
+      const next = {};
+      for (const r of rows) next[r.app_name] = { runs: r.runs, errored: r.errored, warned: r.warned };
+      appHealthMap = next;
+    } catch (err) {
+      console.error("[ops-dashboard] app-health refresh failed:", err.message); // keep last-good
+    }
   } finally {
     refreshing = false;
   }
@@ -131,6 +150,9 @@ function buildApp() {
       count: jobs.length,
       coverage,
       jobs,
+      // Phase 12: per-app recent-run health, additive. Keyed by app_name.
+      appHealth: appHealthMap,
+      appHealthWindowHours: APP_HEALTH_WINDOW_HOURS,
     });
   });
 

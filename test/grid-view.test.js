@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, STATUS_RANK } = require("../public/grid-view");
+const { sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel, STATUS_RANK } = require("../public/grid-view");
 
 // A small grid fixture. for clarity each field is set only where a test reads it.
 const JOBS = [
@@ -176,4 +176,23 @@ test("summarize: totals, per-status, stale, and unknown-cadence counts", () => {
 
 test("summarize: empty input is all zeros", () => {
   assert.deepEqual(summarize([]), { total: 0, ERROR: 0, WARN: 0, SUCCESS: 0, stale: 0, unknown: 0 });
+});
+
+// --- Phase 12: healthLabel ---------------------------------------------------
+
+test("healthLabel: errored/runs with the window prefix", () => {
+  assert.equal(healthLabel({ runs: 2207, errored: 1914, warned: 1345 }, 24), "24h: 1914/2207 err · 1345 warn");
+  assert.equal(healthLabel({ runs: 10, errored: 0, warned: 0 }, 24), "24h: 0/10 err");
+});
+
+test("healthLabel: nothing to show -> empty string", () => {
+  assert.equal(healthLabel(undefined, 24), "");
+  assert.equal(healthLabel(null, 24), "");
+  assert.equal(healthLabel({ runs: 0, errored: 0 }, 24), "");
+  assert.equal(healthLabel({ errored: 3 }, 24), ""); // runs missing/NaN
+});
+
+test("healthLabel: omits the window prefix when not a positive number", () => {
+  assert.equal(healthLabel({ runs: 5, errored: 1 }, undefined), "1/5 err");
+  assert.equal(healthLabel({ runs: 5, errored: 1 }, 0), "1/5 err");
 });

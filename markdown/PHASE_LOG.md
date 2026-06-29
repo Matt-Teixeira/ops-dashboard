@@ -8,6 +8,145 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 12 — Grid Recent-Run Health
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_12_grid_recent_health.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_12.md`
+
+## Goals
+
+- Stop the grid misrepresenting high-frequency single-bucket apps: show a per-APP
+  recent-run health summary (runs/errored/warned over ~24h) on the app group header,
+  so data_acquisition's one-latest-run status isn't mistaken for the app's health.
+
+## Built
+
+- `db/queries.js`: `APP_HEALTH_SQL` + `appHealth(sinceIso)` — per-app counts (runs,
+  errored, warned) from `warn_error_logs` only, `WHERE inserted_at > $1` (partition
+  prune), `GROUP BY app_name`. No `verbose_log`.
+- `server.js`: computes it in `refreshOnce()` on the grid timer (window
+  `APP_HEALTH_WINDOW_HOURS`, default 24) in its own try/catch (failure keeps last-good,
+  never blanks the grid); adds `appHealth` + `appHealthWindowHours` to
+  `/api/jobs/latest` additively.
+- `public/grid-view.js`: pure `healthLabel(h, windowHours)`; `test/grid-view.test.js`
+  +3 (83 total).
+- `public/index.html`: app group header renders the label as an ERROR/SUCCESS badge,
+  degrading to nothing when an app has no entry.
+- Config: `APP_HEALTH_WINDOW_HOURS` in `.env.example` + `markdown/ENVIRONMENT.md`.
+
+## Schema Facts Confirmed (live DB)
+
+- `EXPLAIN`: HashAggregate over a single-partition Index Scan
+  (`app_run_logs_2026_06_inserted_at_idx`, `inserted_at >` cond); no `verbose_log`.
+- Live 24h health: data_acquisition runs=1104 errored=959 warned=674 (~87% error);
+  hhm_rpp_philips 528/816 errored; hhm_rpp_ge 144 runs, 0 err / 144 warn;
+  ops-dashboard clean. Matches the grid's warn_error_logs status rule.
+
+## Important Decisions
+
+### Per-APP aggregate (not per-(app, job))
+
+Decision: aggregate health by `app_name` only and show it on the app group header.
+
+Reason: a per-(app, job) aggregate needs the job, which comes from
+`verbose_log->argv` — reading `verbose_log` detoasts it (data_acquisition's is large).
+Per-app from `warn_error_logs` is detoast-free and cheap; the group header is the
+natural app-level home.
+
+Tradeoff: multi-job apps (hhm_rpp_*) show one app-level number across their jobs
+rather than per job. Accepted; per-(app, job) is recorded as deferred.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: read-only; no new grant (SELECT on
+  util.app_run_logs already held); no writes.
+- Query / partition-pruning impact: `inserted_at > $1` prunes; never reads
+  `verbose_log`; computed on the refresh timer, off the request path.
+- Performance (request-path latency) impact: grid still served from cache; the
+  aggregate is a cheap background query; a failure keeps last-good and doesn't blank
+  the grid.
+- Security impact: additive read-only field; no new input.
+- Deployment impact: needs a `docker compose restart` to load the server change
+  (done); one new optional env var with a safe default.
+- API / response-shape compatibility impact: additive (`appHealth`,
+  `appHealthWindowHours`).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 83/83
+EXPLAIN APP_HEALTH_SQL                                     # single-partition index scan, no verbose_log
+curl /api/jobs/latest                                     # appHealth present, grid intact
+```
+
+Results:
+
+- Passed: 83/83 (80 prior + 3 new `healthLabel`).
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- `/api/jobs/latest` → `appHealth` populated (data_acquisition 959/1104 errored),
+  `appHealthWindowHours: 24`, 24 jobs still served from cache.
+- EXPLAIN confirmed partition prune + no verbose_log.
+- Regression: `/healthz`, `/api/errors`, `/api/connectivity`, `/api/apps/:app/runs`
+  all 200.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_12.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Phase 13 (run-log status filter) and Phase 14 (connectivity rollup + refresh) —
+  prompts authored.
+
+## Commit Readiness
+
+- Requirements implemented: yes (per-app aggregate + group-header health).
+- Read-only / least-privilege rules hold: yes (no new grant).
+- Time-windowed queries partition-pruned: yes (EXPLAIN-confirmed).
+- Schema assumptions confirmed live: yes (plan + counts + status parity).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (83/83 + EXPLAIN + live).
+- Ready to commit: yes.
+
+---
+
 # Phase 11 — Per-App Run History
 
 Date:

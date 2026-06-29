@@ -159,6 +159,28 @@ function connectivity() {
   return db.any(CONNECTIVITY_SQL);
 }
 
+// Per-APP recent-run health (Phase 12): how many runs each app had in a recent
+// window and how many errored/warned. Deliberately per APP, not per (app, job):
+// the job comes from verbose_log->argv, and reading verbose_log detoasts it
+// (data_acquisition's is large), so this stays warn_error_logs-only (small,
+// pre-filtered) -- no detoast. Partition-pruned via `inserted_at > $1`. Computed on
+// the grid refresh timer (off the request path) and served additively so the grid
+// stops misrepresenting high-frequency single-bucket apps by their one latest run.
+const APP_HEALTH_SQL = `
+SELECT
+  app_name,
+  count(*)::int AS runs,
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))::int AS errored,
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'WARN'))::int  AS warned
+FROM util.app_run_logs
+WHERE inserted_at > $1::timestamptz
+GROUP BY app_name;
+`;
+
+function appHealth(sinceIso) {
+  return db.any(APP_HEALTH_SQL, [sinceIso]);
+}
+
 function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null) {
   return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit]);
 }
@@ -178,4 +200,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, ping };

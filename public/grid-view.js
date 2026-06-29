@@ -157,5 +157,19 @@
     return out;
   }
 
-  return { STATUS_RANK, sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize };
+  /**
+   * Short label for an app's recent-run health (Phase 12), e.g. "24h: 14/22 err"
+   * or "… · 9 warn". Returns "" when there's nothing to show (no entry, no runs, or
+   * malformed input) so the caller renders nothing. Pure; the caller picks the color
+   * from `h.errored`.
+   */
+  function healthLabel(h, windowHours) {
+    if (!h || !Number.isFinite(h.runs) || h.runs <= 0) return "";
+    const prefix = Number.isFinite(windowHours) && windowHours > 0 ? windowHours + "h: " : "";
+    let s = prefix + (h.errored || 0) + "/" + h.runs + " err";
+    if (h.warned) s += " · " + h.warned + " warn";
+    return s;
+  }
+
+  return { STATUS_RANK, sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel };
 });

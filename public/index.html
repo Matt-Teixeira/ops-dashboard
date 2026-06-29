@@ -238,6 +238,20 @@
       b.className = "badge " + status;
       b.textContent = status;
       td.appendChild(b);
+      // When grouped by app, the group key IS an app name: show its recent-run health
+      // (Phase 12) so a high-frequency single-bucket app isn't judged by one latest run.
+      if (gridView.groupBy === "app" && gridData.appHealth) {
+        const h = gridData.appHealth[group.key];
+        const txt = GridView.healthLabel(h, gridData.appHealthWindowHours);
+        if (txt) {
+          const hb = document.createElement("span");
+          hb.className = "badge " + (h.errored > 0 ? "ERROR" : "SUCCESS");
+          hb.style.marginLeft = ".5rem";
+          hb.title = "runs in the last " + gridData.appHealthWindowHours + "h that errored / total (recent health, not the single latest run)";
+          hb.textContent = txt;
+          td.appendChild(hb);
+        }
+      }
       // When grouped by app, the group key IS an app name: offer its full run log.
       // stopPropagation so the link navigates instead of toggling the collapse.
       if (gridView.groupBy === "app") {
