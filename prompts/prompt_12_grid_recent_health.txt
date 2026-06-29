@@ -1,0 +1,77 @@
+Phase 12 - Grid Recent-Run Health
+
+Goal:
+Stop the job grid from misrepresenting high-frequency, single-bucket apps. The grid
+shows the latest run per (app, job), so data_acquisition (all runs -> "(default)")
+appears as one arbitrary recent run -- often SUCCESS even though most runs error.
+Surface a cheap per-APP recent-run health summary (runs / errored / warned over a
+recent window) on the app group header so the at-a-glance truth is visible.
+
+Background (verified this session - do not re-discover):
+- Grid = latest-run-per-(app, job) from the in-process cache (lib/run-cache.js).
+  data_acquisition has no argv job -> one "(default)" row whose status is a single
+  run. Live: data_acquisition ran 1104x/24h; 1914/2207 errored over 2 days.
+- A per-(app, job) recent aggregate would need the job, which comes from
+  verbose_log->0 argv -- and reading verbose_log DETOASTS it (data_acquisition's is
+  ~680KB/run). Doing that across a window is exactly the cost the architecture avoids.
+  So aggregate per APP only, from warn_error_logs (the small pre-filtered array, like
+  ERRORS_SQL): NO verbose_log, partition-pruned, cheap.
+- Phase 8 renders an app group header (when grouped by app); that is the natural,
+  app-level place for an app-level number. The grid is served instantly from cache,
+  so compute this on the existing refresh timer, not per request.
+
+Scope:
+- db/queries.js: APP_HEALTH_SQL + appHealth(sinceIso). Per app over the window:
+  count(*) AS runs, count(*) FILTER (WHERE a run has an ERROR in warn_error_logs) AS
+  errored, count(*) FILTER (WHERE it has a WARN) AS warned. warn_error_logs only; no
+  verbose_log; WHERE inserted_at > $1::timestamptz (partition prune); GROUP BY app_name.
+- server.js: in refreshOnce(), after the grid scan, also run appHealth over a window
+  (env APP_HEALTH_WINDOW_HOURS, default 24) and store it. Add it ADDITIVELY to the
+  /api/jobs/latest response as appHealth: { <app>: { runs, errored, warned, windowHours } }.
+  Keep the request path cache-served (no new per-request query); a failed appHealth
+  query must not blank the grid (keep last-good / null, like the grid's lastError).
+- public/index.html: in the app group header (groupBy === "app"), render the recent
+  health for that app, e.g. "24h: 1914/2207 err" (and/or a WARN count), styled on the
+  existing badges; degrade to nothing if appHealth is missing for that app. Pure
+  formatting (e.g. a healthLabel helper) belongs in public/grid-view.js with a test.
+- Config: APP_HEALTH_WINDOW_HOURS in .env.example + markdown/ENVIRONMENT.md.
+
+Non-goals:
+- No per-(app, job) recent health (it requires deriving job from verbose_log -> a
+  detoast of data_acquisition's large blob; out of scope by design). App-level only.
+- Do NOT change the latest-run status semantics, the per-(app, job) cache entries, or
+  the grid row's existing status/STALE badges -- this is additive.
+- No new request-path query (compute on the refresh timer); no writes; no new grant.
+- No framework/build step.
+
+Expected files / layers:
+- db/queries.js (APP_HEALTH_SQL + appHealth), server.js (compute in refreshOnce +
+  additive response field), public/index.html + public/grid-view.js (group-head
+  health label + pure helper), test/grid-view.test.js, .env.example,
+  markdown/ENVIRONMENT.md.
+
+Expected validation:
+- node --test for the pure health-label helper (zero/all/partial errored; missing
+  data -> empty).
+- Live EXPLAIN on APP_HEALTH_SQL: partition-pruned, no verbose_log, a group aggregate
+  over the current partition(s) only.
+- Live smoke: /api/jobs/latest includes appHealth with data_acquisition showing a
+  large errored/runs (matching ~the 87% seen); the app group header renders it; the
+  grid still serves fast from cache; existing rows/badges unchanged.
+
+Read-only / least-privilege constraints:
+- Read-only; ops_dashboard_ro already has SELECT on util.app_run_logs (no new grant).
+  No writes/DDL.
+
+Schema assumptions to confirm live (before coding):
+- Re-confirm APP_HEALTH_SQL prunes on inserted_at and never reads verbose_log.
+- Confirm warn_error_logs ERROR/WARN detection matches the grid's status rule.
+- Confirm per-app 24h volume so the window/cost are sane (data_acquisition ~1100/24h).
+
+Review questions:
+- Is the aggregate per APP and strictly warn_error_logs-only (no verbose_log detoast)?
+- Is it computed on the refresh timer (off the request path) and additive to the
+  response, with a failed aggregate never blanking the grid?
+- Does the group header degrade gracefully when an app has no appHealth entry?
+- Is the error/warn detection consistent with JOBS_LATEST_SQL?
+- Is the latest-run status/STALE behavior left unchanged (this only adds context)?

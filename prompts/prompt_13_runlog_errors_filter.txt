@@ -1,0 +1,63 @@
+Phase 13 - Run-Log Status Filter
+
+Goal:
+Let the per-app run-log (Phase 11) show only the runs that matter. For a noisy app
+like data_acquisition (~87% of runs error), an "errors only" / "issues only" filter
+turns 1100 runs/24h into the handful an operator cares about. Server-side so it
+composes with the keyset pagination.
+
+Background (depends on Phase 11 - do not re-discover):
+- GET /api/apps/:app/runs returns runs newest-first, keyset-paginated on
+  (inserted_at, run_id), status/issue_count derived from warn_error_logs only (no
+  verbose_log). Pure shaping in lib/app-runs.js; SQL is APP_RUNS_SQL in db/queries.js;
+  the routed #appruns view renders it with "load more".
+- The filter is a narrowing WHERE on the SAME query, so keyset pagination still holds
+  unchanged (it just skips rows); no new detoast (warn_error_logs only).
+
+Scope:
+- db/queries.js: extend APP_RUNS_SQL + appRuns() with a status filter. Accept a
+  normalized value: "all" (default, no predicate), "error" (runs with an ERROR event),
+  "issues" (runs with a WARN or ERROR). Implement as an EXISTS over warn_error_logs
+  (mirroring the status rule). Keep it a bound parameter / safe enum -- never string
+  interpolation. Pagination params and ORDER/LIMIT are unchanged.
+- lib/app-runs.js: a small pure normalizer (e.g. normalizeStatusFilter(raw) -> one of
+  the allowed values, default "all") so the route stays thin and it's unit-tested.
+- server.js: GET /api/apps/:app/runs gains ?status=all|error|issues, normalized via
+  the helper, passed to appRuns(); echo the applied filter back in the response.
+- public/index.html: a small control in the #appruns view (e.g. All / Issues / Errors
+  segmented buttons or a select). Changing it refetches from page 1 (resets the
+  cursor) for that app; the choice is view state on appRunsState (re-applied on "load
+  more" so paging stays within the filter).
+
+Non-goals:
+- No verbose_log access; status still from warn_error_logs only.
+- Do not change the keyset pagination contract or the response shape beyond adding the
+  echoed filter.
+- No per-(app, job) filtering; no free-text search (could come later, reuse Phase 9).
+- No writes/grant; no framework/build step.
+
+Expected files / layers:
+- db/queries.js (filter predicate), lib/app-runs.js (normalizer), server.js (param),
+  public/index.html (filter control + refetch), test/app-runs.test.js.
+
+Expected validation:
+- node --test: normalizeStatusFilter maps valid/invalid/missing inputs to the allowed
+  enum (default "all"); APP_RUNS_SQL shape guard still holds and the predicate is
+  parameterized/enumerated (no interpolation).
+- Live smoke: /api/apps/data_acquisition/runs?status=error returns only ERROR runs and
+  paginates correctly via the cursor (no gaps/dupes); ?status=issues includes WARN;
+  default still returns all; the UI control refetches and "load more" stays filtered.
+
+Read-only / least-privilege constraints:
+- Read-only; no new grant; warn_error_logs only.
+
+Schema assumptions to confirm live (before coding):
+- Confirm the EXISTS-over-warn_error_logs predicate matches the grid/run-log status
+  rule and still prunes on inserted_at with the filter applied.
+
+Review questions:
+- Is the filter a safe enum/bound param (no SQL string interpolation)?
+- Does keyset pagination still hold with the filter (no gaps/dupes, paging stays
+  within the selected filter)?
+- Is it still warn_error_logs-only (no verbose_log)?
+- Does the UI reset to page 1 on filter change and keep the filter across "load more"?

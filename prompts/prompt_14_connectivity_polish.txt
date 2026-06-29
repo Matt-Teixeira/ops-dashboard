@@ -1,0 +1,65 @@
+Phase 14 - Connectivity Polish
+
+Goal:
+Tie the connectivity panel into the dashboard and keep it fresh: a small connectivity
+rollup badge on the data_acquisition grid row (offline counts) that links to the
+connectivity view, plus a manual refresh + "as of" indicator on that view. Read-only,
+additive.
+
+Background (depends on Phase 10 - do not re-discover):
+- GET /api/connectivity returns the latest per-system state across HHM/MMB, already
+  decorated/sorted (lib/connectivity.js). The routed #connectivity view renders it but
+  has no refresh affordance and isn't linked from the grid.
+- The grid row for data_acquisition is where an operator first looks; a connectivity
+  signal belongs there. The counts can be derived CLIENT-SIDE from /api/connectivity
+  (no backend join, no new query) -- consistent with the Phase 9 "summary from the
+  existing payload" precedent.
+
+Scope:
+- Rollup badge (client-side): on dashboard load, fetch /api/connectivity once (or
+  reuse a cached fetch) and compute offline counts per source -> { hhmOff, mmbOff }.
+  Render a badge on the data_acquisition grid row (or its app group header) like
+  "HHM 3 / MMB 2 offline", wrapped in <a href="#connectivity">; ERROR-styled when any
+  offline, neutral when none. A pure helper (e.g. connRollup(systems) and a label
+  formatter) belongs in lib/connectivity.js (server-pure, already required) OR a small
+  browser-loaded helper -- decide and keep it unit-tested. Guard for the connectivity
+  fetch not being loaded/failing (render nothing, never a broken badge).
+- Connectivity view refresh: add a "refresh" button + an "as of <time> (updated Ns
+  ago)" indicator (reuse fmtTime/fmtAge), re-fetching /api/connectivity and re-rendering
+  with the existing runReq guard. Optional: a default-on auto-refresh aligned to a sane
+  interval (the alert tables are upserted per data_acquisition heartbeat).
+- Do NOT add a backend join or new endpoint; the badge is derived from the existing
+  connectivity payload.
+
+Non-goals:
+- No backend change/new query/grant; the rollup is client-side from /api/connectivity.
+- No per-system history or per-run correlation (stays deferred -> stats.acquisition_history).
+- Don't disturb the Phase 12 group-header health (badge and health can coexist on the
+  row/header; keep both additive and legible).
+- No framework/build step.
+
+Expected files / layers:
+- public/index.html (rollup badge on the grid row/group head; connectivity refresh +
+  indicator), lib/connectivity.js (pure rollup + label) or a small browser helper,
+  test/connectivity.test.js.
+
+Expected validation:
+- node --test for the pure rollup/label (none offline -> neutral/empty; some offline ->
+  per-source counts; tolerates missing/partial payload).
+- Live smoke: the data_acquisition row shows the offline rollup and clicking it routes
+  to #connectivity; the connectivity view's refresh button re-pulls and the "updated
+  Ns ago" ticks; grid/other views unaffected.
+
+Read-only / least-privilege constraints:
+- Read-only; no new query or grant (reuses /api/connectivity).
+
+Schema assumptions to confirm live (before coding):
+- None new. Confirm /api/connectivity still returns systems with source + status so
+  the client rollup is correct.
+
+Review questions:
+- Is the rollup purely client-side from the existing payload (no backend join)?
+- Does the badge degrade to nothing if the connectivity fetch is missing/failed?
+- Does the rollup helper stay pure and unit-tested?
+- Do the Phase 12 health and the connectivity badge coexist legibly on the row/header?
+- Does the connectivity refresh reuse the runReq guard and not over-poll?
