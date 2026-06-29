@@ -94,15 +94,18 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_14.md`.
+- External (Codex) on `notes/review_handoff_phase_14.md` (source-level + unit suite;
+  live EXPLAIN not re-run). `node --test` 86/86.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: the rollup is derived from the existing `/api/connectivity`
+  payload (no backend join); `loadConnRollup()` failures are swallowed with last-good
+  preserved; the badge link uses `stopPropagation()`.
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
@@ -223,15 +226,18 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_13.md`.
+- External (Codex) on `notes/review_handoff_phase_13.md` (source-level + unit suite).
+  `node --test` 86/86.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: the status filter is normalized server-side and passed as a
+  bound `$6`; all/error/issues semantics are correct; the keyset pagination/cursor
+  order is unchanged.
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
@@ -361,15 +367,18 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_12.md`.
+- External (Codex) on `notes/review_handoff_phase_12.md` (source-level + unit suite).
+  `node --test` 86/86.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: `APP_HEALTH_SQL` is warn_error_logs-only and partition-pruned
+  (`inserted_at > $1`), and the health refresh is isolated in its own try/catch so a
+  failure keeps last-good and never blanks the grid.
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
