@@ -125,15 +125,21 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_11.md`.
+- External (Codex) on `notes/review_handoff_phase_11.md` (source-level + unit suite;
+  live EXPLAIN not re-run by the reviewer). `node --test` 80/80.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: APP_RUNS_SQL is parameterized, partition-pruned on
+  `inserted_at > $2`, avoids `verbose_log`, returns a full-microsecond cursor, and
+  keysets on `(inserted_at, run_id) < (...)` with matching DESC order; the endpoint
+  clamps window/limit, validates cursor halves and ignores partial cursors; the UI
+  preserves the cursor string, renders via text nodes, and drills down with the
+  `inserted_at` hint.
 
 Accepted fixes:
 
-- None yet (one self-caught during dev: `clampInt("")` must be the default since
+- None (one self-caught during dev: `clampInt("")` must be the default since
   `Number("")===0`; handled + tested).
 
 Deferred findings:
