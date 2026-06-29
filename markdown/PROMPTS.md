@@ -16,6 +16,11 @@ direction is to **harden and future-proof** it:
 - finish the user-facing surface (run drill-down UI)
 - make staleness detection real (true cron cadences, not placeholders)
 - optionally self-monitor (`app_name = "ops-dashboard"`)
+- add operator-facing grid QoL — grouping, sorting, filtering, and a refresh
+  indicator — all client-side and additive over the existing payload (Phases 8–9)
+- surface per-equipment connectivity (which systems are offline) that the
+  `data_acquisition/(default)` bucket hides — read-only over the `alert.*` tables
+  (Phase 10)
 
 Current decisions:
 
@@ -36,6 +41,10 @@ Not decided yet:
 - whether to add auth (only if exposure changes from host-internal)
 - whether to ever promote the in-process cache to a durable DB summary table (Option A)
 - retention/rotation strategy for `/opt/run-logs` (a stretch view, not core)
+- whether to add a grid connectivity rollup badge on the `data_acquisition` row
+  (deferred from Phase 10)
+- whether to correlate connectivity to specific runs via `stats.acquisition_history`
+  (has `run_id`) — needs a third schema grant + a time-windowed join (deferred)
 
 These are decided in future phases, not hidden inside unrelated edits.
 
@@ -53,6 +62,9 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 5 | `prompt_5_run_drilldown_ui.txt` | Completed | Frontend-only run drill-down: in-page hash router + event timeline over `/api/runs/:run_id`, reached from the grid and error feed. See PHASE_LOG. |
 | 6 | `prompt_6_real_schedules.txt` | Completed | Confirmed cron cadences + provenance; added 15 Philips variants; SIEMENS_CV left unknown; (default) stall budget; coverage surface (API + UI). See PHASE_LOG. |
 | 7 | `prompt_7_self_monitoring.txt` | Completed | Opt-in heartbeat under `app_name = "ops-dashboard"` via a DB-enforced writer; appears in its own grid. See PHASE_LOG. |
+| 8 | `prompt_8_grid_grouping_sort.txt` | Pending | Client-side grid grouping (app/job/none, collapsible) + sortable columns incl. last-run datetime; pure transforms extracted to `lib/grid-view.js`. Frontend-only, additive. |
+| 9 | `prompt_9_grid_filters.txt` | Pending | Filter/search box + status chips (incl. STALE) + summary-counts header + last-updated/auto-refresh; builds on the Phase 8 render pipeline. Frontend-only. |
+| 10 | `prompt_10_connectivity_panel.txt` | Pending | Dedicated read-only Connectivity view over `alert.offline_hhm_conn`/`offline_mmb_conn` (latest per-system state, offline-first); expands `ops_dashboard_ro` with SELECT on schema `alert` — the first read outside `util`. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -69,6 +81,9 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 5 | `phase-5-run-drilldown-ui` |
 | 6 | `phase-6-real-schedules` |
 | 7 | `phase-7-self-monitoring` |
+| 8 | `phase-8-grid-grouping-sort` |
+| 9 | `phase-9-grid-filters` |
+| 10 | `phase-10-connectivity-panel` |
 
 Check `git status --short` before creating or switching branches.
 

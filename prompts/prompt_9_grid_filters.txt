@@ -1,0 +1,76 @@
+Phase 9 - Grid Filters, Summary & Refresh
+
+Goal:
+On top of Phase 8's render pipeline, let an operator narrow and monitor the job
+grid: a free-text filter, status filter chips (including STALE), a summary-counts
+header, and a last-updated / auto-refresh indicator. Still entirely client-side.
+
+Background (depends on Phase 8 - do not re-discover):
+- Phase 8 added renderGrid() (fetch / transform / render), the gridView state
+  object persisted to localStorage, and lib/grid-view.js (sortJobs, groupJobs,
+  groupRollupStatus). This phase extends those; it does NOT rebuild them.
+- Filtering must run BEFORE grouping in renderGrid(): filter -> sort -> group.
+- The grid payload already carries every field needed (status, stale, count,
+  coverage.unknown, asOf); summary counts are derived client-side, no new server
+  fields.
+
+Scope:
+- Add filterJobs(jobs, { search, statuses }) to lib/grid-view.js (+ tests):
+  case-insensitive match on app, job, and runId; status-set membership where STALE
+  matches j.stale === true (NOT j.status); an empty statuses set means show all.
+  Extend gridView with { search, statuses } (persisted to localStorage with the
+  Phase 8 keys).
+- Add a controls bar above the grid table: a debounced (~150ms)
+  <input id="grid-search">, the group-by selector (App / Job / None), and status
+  chip buttons (ERROR / WARN / SUCCESS / STALE) that toggle membership in
+  gridView.statuses. Style chips on the existing .badge look with an
+  aria-pressed / active state.
+- Summary-counts header: extend the existing #meta line (or add a #summary div)
+  with totals derived from gridData.jobs - total jobs, plus ERROR / WARN / SUCCESS
+  / STALE / unknown-cadence counts. Reuse gridData.count and
+  gridData.coverage.unknown rather than recomputing where possible. Render the
+  per-status counts as the same clickable chips so the header doubles as the filter.
+- Last-updated + auto-refresh: add a "updated Ns ago" label derived from
+  gridData.asOf, ticking ~5s via setInterval (format with the existing fmtAge); and
+  an auto-refresh checkbox (default on) that calls refresh() about every 120s,
+  aligned to GRID_REFRESH_MS - NO faster, because the in-process cache only changes
+  that often. gridView (sort / group / filter / collapse) must be preserved across
+  refreshes (render is already decoupled from fetch in Phase 8).
+
+Non-goals:
+- No backend, query, endpoint, or credential change; no new server response fields
+  (the summary is computed client-side from the existing payload).
+- No per-job run-history view (deferred).
+- No alerting/paging - filters and the summary are display only.
+- Auto-refresh interval must not be faster than GRID_REFRESH_MS.
+- No framework or build step.
+
+Expected files / layers:
+- public/index.html (controls bar, status chips, summary header, last-updated +
+  auto-refresh, wiring into renderGrid + gridView).
+- lib/grid-view.js (add filterJobs).
+- test/grid-view.test.js (add filter cases).
+
+Expected validation:
+- node --test for filterJobs: search match across app/job/runId, status filtering,
+  STALE matching j.stale (not status), and empty statuses set = show all. Keep it
+  pure (plain job objects in).
+- Live smoke: type in search and confirm rows narrow; toggle each status chip and
+  STALE; confirm the summary counts reconcile with the visible rows; confirm the
+  "updated Ns ago" label ticks; confirm auto-refresh preserves the current sort /
+  group / filter / collapse state and does not fetch faster than the cache refresh.
+
+Read-only / least-privilege constraints:
+- Frontend only; no DB, query, or credential change; still ops_dashboard_ro.
+
+Schema assumptions to confirm live:
+- None new. Confirm the grid payload still exposes status, stale, count, and
+  coverage.unknown (and asOf) before deriving chips/summary/last-updated from them.
+
+Review questions:
+- Does the STALE chip filter on j.stale === true rather than j.status?
+- Do the summary counts reconcile with the filtered/visible rows?
+- Does auto-refresh avoid fetching faster than GRID_REFRESH_MS and preserve the
+  full gridView state across refreshes?
+- Is filterJobs pure, DB-free, and unit-tested like the Phase 8 transforms?
+- Is the filter applied before grouping (filter -> sort -> group)?

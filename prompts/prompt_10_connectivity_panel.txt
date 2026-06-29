@@ -1,0 +1,142 @@
+Phase 10 - Connectivity Panel
+
+Goal:
+Add a dedicated, read-only Connectivity view that surfaces each equipment system's
+latest connectivity state across the HHM (SSH telemetry) and MMB (Philips MRI
+rsync) sources, offline-first. This fills the per-system gap the
+data_acquisition/(default) grid bucket hides today - a run can read SUCCESS while
+individual systems have been silently offline for days. The phase bundles the
+required least-privilege grant expansion so the panel is testable end to end.
+
+Background (verified live this session - do not re-discover):
+- Two small tables hold the data: alert.offline_hhm_conn (~284 rows, HHM =
+  equipment telemetry over SSH) and alert.offline_mmb_conn (~255 rows, MMB =
+  Philips MRI magnet-monitor over rsync). Both are UPSERT'd to ONE row per
+  system_id (PK, varchar(8) e.g. "SME01068") = that system's LATEST state. PK index
+  only; NO json columns to detoast; NOT partitioned. A full scan over the ~540
+  combined rows is sub-millisecond.
+- Columns (both tables): system_id, capture_datetime (timestamptz - when the
+  equipment data was last captured; may be hours/days stale), inserted_at
+  (timestamptz default now() - when the alert row was last written),
+  successful_acquisition (bool; true/false/NULL), host_intervention (bool),
+  connection_error (text e.g. "curl timeout"), error_category (varchar e.g.
+  connection_timeout / max_retries / rsync_io_timeout), phase (varchar; HHM
+  grab/list/transfer, MMB remote_rsync), daily_total / lifetime_total (int).
+  daily_total_history (int[]) is HHM-only.
+- Producer is data_acquisition/util/tools/offline_alert.js. ops-dashboard is
+  read-only over it - do NOT modify it.
+- These tables carry NO run_id, so per-run correlation is not possible from them
+  (it would need stats.acquisition_history) - that is deferred, out of scope here.
+- This is the dashboard's FIRST read outside schema util. ops_dashboard_ro today
+  has only CONNECT, USAGE ON SCHEMA util, SELECT ON util.app_run_logs
+  (db/setup-readonly-role.sql).
+- This phase is independent of the Pending Phase 8/9 grid refactor - the
+  connectivity view is a separate routed view and must not assume renderGrid/
+  gridData/lib/grid-view.js exist.
+
+Scope:
+- Grant expansion in db/setup-readonly-role.sql: after the existing util grants,
+  add GRANT USAGE ON SCHEMA alert and GRANT SELECT ON alert.offline_hhm_conn and
+  alert.offline_mmb_conn to ops_dashboard_ro. Revise the file header (it asserts
+  util.app_run_logs only). GRANTs are idempotent / re-runnable. NOTE the two-step
+  deploy: a superuser must run the updated setup-readonly-role.sql BEFORE the new
+  code goes live, or /api/connectivity returns 500 (permission denied for schema
+  alert). Record this in markdown/DEPLOYMENT.md.
+- Query in db/queries.js: CONNECTIVITY_SQL plus a thin exported connectivity()
+  function (db.any), following the existing const _SQL + function pattern.
+  UNION ALL the two tables with a literal source label ('HHM' / 'MMB');
+  daily_total_history is NULL::int[] for MMB. The SQL comment must justify the full
+  scan (tiny, PK-only, no detoast, not partitioned) and the decision to run
+  directly on the request path with NO cache - the Performance Rule targets the
+  verbose_log detoast cost, which is absent here. Do NOT sort in SQL.
+- Pure logic in a new lib/connectivity.js (DB-free, DOM-free, mirroring lib/runs.js
+  and lib/staleness.js): connStatus(row) deriving OFFLINE (successful_acquisition
+  === false), ONLINE (=== true), UNKNOWN (null), mapped onto the existing badge
+  classes ERROR / SUCCESS / unknown; one shared rank map { OFFLINE:0, UNKNOWN:1,
+  ONLINE:2 } (same idiom as the grid status rank); sortConnectivity(rows, now)
+  worst-first, then oldest capture_datetime first, then system_id localeCompare for
+  stability (handle NULL capture_datetime deterministically); captureAgeMs(row,now)
+  ("how stale" the equipment data is) and checkedAgeMs(row,now) ("last checked" =
+  age of inserted_at) as two DISTINCT ages; decorate(rows, now) = sort + attach
+  status / captureAgeMs / checkedAgeMs. Inject now like staleness.evaluate.
+- Endpoint GET /api/connectivity in server.js: a thin handler delegating to
+  connectivity.decorate(await queries.connectivity(), now), returning
+  { asOf, count, systems }. try/catch -> next(err); rely on the existing
+  sanitizing error handler so a missing grant surfaces as a generic 500 (no
+  internal details). require the new lib alongside runs / staleness.
+- Frontend in public/index.html: a SEPARATE routed view #connectivity (not a third
+  dashboard panel - ~540 rows would bury the grid). Add a "connectivity" nav link in
+  the header, a route() branch + showConnectivity()/show-hide mirroring the run-view,
+  and loadConnectivity() rendering a table with columns: Source (HHM/MMB), System
+  (system_id), Status badge (OFFLINE red / ONLINE green / UNKNOWN grey), Error
+  category, Phase, Connection error (.err-msg), Capture age (fmtAge(captureAgeMs)),
+  Last checked (fmtTime(inserted_at) + fmtAge(checkedAgeMs)), Host intervention.
+  Offline rows render at top (API already sorts worst-first) with the .row-ERROR
+  tint. Load lib/connectivity.js via a plain <script src>. Reuse fmtAge / fmtTime /
+  cell, the badge CSS, and the runReq stale-fetch guard. Render all log-derived text
+  via textContent (no innerHTML), as elsewhere.
+- Docs: update markdown/ARCHITECTURE_PRINCIPLES.md - the Least-Privilege grant list
+  (name schema alert + the two tables; note the first read outside util), the
+  product-identity "renders" list (add the connectivity view), and the Data-Contract
+  rule (a second read-only source: one row per system_id, upserted, no partitions,
+  no detoast - full scan justified). Update docs/apps-suite.md; optionally add
+  docs/connectivity-schema.md (mirroring docs/logging-schema.md).
+
+Non-goals:
+- No grid connectivity rollup badge on the data_acquisition row (deferred).
+- No per-run correlation and no read of stats.acquisition_history (deferred - it
+  would need a third schema grant plus a time-windowed join).
+- No writes anywhere; do NOT modify data_acquisition/util/tools/offline_alert.js.
+- No cache - the tables are tiny; the query runs on the request path.
+- No new index on the alert tables (full scan is sub-ms; we are read-only anyway).
+- No framework or build step - keep the single-file vanilla-JS approach (the new
+  lib/connectivity.js is plain JS loaded via <script src>).
+
+Expected files / layers:
+- db/setup-readonly-role.sql (grants + header), db/queries.js (CONNECTIVITY_SQL +
+  connectivity()), lib/connectivity.js (new - pure), test/connectivity.test.js
+  (new), server.js (route + require), public/index.html (#connectivity view),
+  markdown/ARCHITECTURE_PRINCIPLES.md, markdown/DEPLOYMENT.md, docs/apps-suite.md
+  (+ optional docs/connectivity-schema.md).
+
+Expected validation:
+- node --test for lib/connectivity.js: status mapping for true/false/null;
+  sortConnectivity worst-first then oldest-capture then stable by system_id; NULL
+  capture_datetime handled; captureAgeMs vs checkedAgeMs distinct. Keep it pure
+  (plain row objects in), like runs.test.js.
+- Grant smoke (read-only, run by an operator/dev - not auto-applied): SET ROLE
+  ops_dashboard_ro; then SELECT count(*) on both alert tables succeeds, and a write
+  is rejected. EXPLAIN is unnecessary (tiny seq scan).
+- Live smoke: curl /api/connectivity returns ~540 systems, OFFLINE first; open
+  #connectivity and confirm offline rows are on top with red badges, that
+  error_category / phase / connection_error are visible, and that "Capture age" and
+  "Last checked" read as two distinct ages. Confirm the grid, error feed, and
+  /healthz are unaffected.
+
+Read-only / least-privilege constraints:
+- Still strictly read-only. This phase EXPANDS the read-only role's read surface to
+  schema alert (SELECT only, exactly the two tables) - the first read outside util -
+  enforced at the credential layer in db/setup-readonly-role.sql, not just in code.
+  No INSERT/UPDATE/DELETE/DDL; ops_dashboard_ro remains a login role with no write
+  grants.
+
+Schema assumptions to confirm live (before coding):
+- Re-confirm the column set listed in Background against alert.offline_hhm_conn and
+  alert.offline_mmb_conn (names + types) before writing the query.
+- Confirm the grant has been applied: SELECT works as ops_dashboard_ro on both
+  tables.
+- Confirm one-row-per-system_id (upsert) semantics still hold and that
+  daily_total_history exists only on the HHM table.
+- Confirm how NULL successful_acquisition should read (treated as UNKNOWN here).
+
+Review questions:
+- Is the grant strictly SELECT on exactly the two named tables (no broader schema
+  or table access), and is the file header updated to say so?
+- Is the full-scan / no-cache decision explicitly justified against the Performance
+  Rule (which targets verbose_log detoast, absent here)?
+- Is lib/connectivity.js pure, DB-free, and unit-tested like runs.js?
+- Are "how stale" (capture_datetime) and "last checked" (inserted_at) kept distinct
+  in both the API and the UI?
+- Does a missing grant surface as a sanitized 500 with no internal detail leaked?
+- Is the two-step deploy (apply the grant before the code goes live) documented in
+  DEPLOYMENT.md?

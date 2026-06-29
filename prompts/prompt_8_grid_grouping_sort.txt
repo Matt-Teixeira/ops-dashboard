@@ -1,0 +1,87 @@
+Phase 8 - Grid Grouping & Sorting
+
+Goal:
+Make the job grid organizable client-side: group by app / job / none with
+collapsible groups, and sort any column (headline: last-run datetime), without any
+backend change. Controls re-render from the grid payload already in memory.
+
+Background (frontend-only, like Phase 5 - do not re-discover):
+- The grid payload already carries everything needed per job: app, job, runId,
+  lastRun, startedAt, endedAt, durationMs, status, issueCount, ageMs, stale (plus
+  top-level count, coverage, asOf). So grouping/sorting is pure client view state -
+  no new server fields, no query, no endpoint.
+- The current grid sort is server-side in server.js (DISTINCT ON ... ORDER BY
+  app_name, job); the client renders rows in API order. This phase moves ordering
+  to the client WITHOUT removing the server sort (it stays a stable default).
+- public/index.html is a single-file vanilla HTML/JS app, no framework, no build
+  step. loadGrid() fetches, sets meta, clears the tbody, and appends one row per
+  job. This phase refactors that into fetch / transform / render.
+- "Group by run id" from the user request is satisfied by the existing per-row run
+  id + drill-down link; a per-job run-history view is OUT of scope (deferred).
+
+Scope:
+- Refactor loadGrid() into fetch / transform / render: keep the last payload in a
+  module-level gridData; add renderGrid() that rebuilds the table from gridData +
+  view state, so changing a control re-renders with no refetch.
+- Add a gridView state object { groupBy, sortKey, sortDir, collapsed }, persisted
+  to localStorage (key "ops-grid-view") and hydrated on load, so a refresh keeps
+  the operator's layout. Default groupBy "app", sortKey "lastRun", sortDir "desc".
+- Extract the pure transforms into a new lib/grid-view.js, loaded via a plain
+  <script src> (still no build step): sortJobs(jobs, key, dir), groupJobs(jobs, by),
+  groupRollupStatus(rows), and ONE shared status-rank map { ERROR:0, WARN:1,
+  SUCCESS:2, INFO:3 }. lastRun sorts on Date.parse(lastRun); status sort uses the
+  rank (worst-first, secondary by ageMs); duration/issues/age numeric with nulls
+  last; app/job by localeCompare. Direction from sortDir.
+- Group rendering: when groupBy is app or job, render each group as a
+  <tr class="group-head"> (group label + row count + a roll-up badge =
+  groupRollupStatus, the worst status in the group), then its job rows. Clicking a
+  group head toggles its key in gridView.collapsed and hides/shows that group's
+  rows (toggle hidden, no full rebuild). groupBy "none" renders a flat list.
+- Sortable column headers: add data-sort-key to the grid <th> cells and a delegated
+  <thead> click handler that sets sortKey / flips sortDir and shows a up/down
+  indicator. Add role="button", tabindex, and Enter/Space handling to match the
+  error-feed row accessibility pattern already in index.html.
+- Add the needed CSS (.group-head, sort indicator, group controls) to the existing
+  <style> block; keep the current dark/light color-scheme approach.
+
+Non-goals:
+- No backend, query, endpoint, or credential change; the grid API is unchanged.
+- Do NOT remove the server-side sort in server.js - it stays a harmless stable
+  default the client re-sorts on top of.
+- No per-job run-history view (deferred). "Group by run id" is the existing per-row
+  run id + drill-down link only.
+- No framework or build step - keep the single-file vanilla-JS approach (the new
+  lib/grid-view.js is plain JS loaded via <script src>).
+- No filter/search box, status chips, summary header, or auto-refresh - those are
+  Phase 9.
+
+Expected files / layers:
+- public/index.html (loadGrid refactor, renderGrid, group/sort UI + CSS).
+- lib/grid-view.js (new - pure sort/group/rollup transforms, no DOM, no DB).
+- test/grid-view.test.js (new).
+
+Expected validation:
+- node --test for grid-view: datetime sort asc/desc, status-rank ordering,
+  nulls-last for duration, group bucketing, worst-status roll-up. Keep it pure
+  (plain job objects in, ordered/grouped data out) like runs.test.js.
+- Live smoke: group by app and by job, collapse/expand a group, sort every column
+  (especially Last run), and confirm grouped rows still drill down with the
+  inserted_at (at=) hint intact. Confirm the grid request stays ~3ms (no query
+  touched).
+
+Read-only / least-privilege constraints:
+- Frontend only; no DB, query, or credential change; still ops_dashboard_ro.
+
+Schema assumptions to confirm live:
+- None new. This phase reads only the existing grid payload shape; confirm those
+  fields (lastRun, ageMs, durationMs, issueCount, status, stale) are still present
+  in the /api/jobs/latest response before relying on them for sort/group.
+
+Review questions:
+- Is rendering fully decoupled from fetch (changing a control re-renders from
+  gridData with no network request)?
+- Do grouped rows still carry the drill-down inserted_at hint (at=)?
+- Is the sort comparator stable, and are null durationMs/ageMs handled (nulls last)?
+- Is lib/grid-view.js pure and DB-free, and is it unit-tested like runs.js?
+- Is the server-side sort left untouched, and does the client re-sort cleanly on
+  top of it?
