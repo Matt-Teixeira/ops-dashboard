@@ -1,0 +1,70 @@
+Phase 16 - data_acquisition Inline Run Expansion
+
+Goal:
+Let the data_acquisition grid row expand inline to show its distinct run_ids from the
+last 12h (capped, newest first), each linking to the drill-down, with a "see all"
+link to the full run-log. Frontend-only: reuse the Phase 11 endpoint; no backend,
+query, grant, cache, or restart.
+
+Background (verified - do not re-discover):
+- data_acquisition has no argv job, so the grid (latest-run-per-(app,job), served from
+  the in-process cache) shows it as ONE "(default)" row. It runs ~1100x/24h
+  (~550 in 12h), all distinct run_ids -- the dimension the single row hides.
+- Phase 11 already serves these: GET /api/apps/:app/runs?windowHours=<h>&limit=<n>
+  returns runs newest-first (run_id, insertedAt, status, issueCount), keyset-paginated,
+  lean (warn_error_logs only). This phase just surfaces a capped slice inline in the
+  grid; it does NOT add a query or change the grid cache/model.
+- Reuse: appRunsUrl(app,before,beforeId,status), fmtTime/fmtAge/cell, runHref (the
+  drill-down link + at= hint), the Phase 8 group render + collapse, badge CSS.
+
+Scope (public/index.html only):
+- On the data_acquisition "(default)" grid row, when grouped by app, add a lazy
+  expand toggle (e.g. a "▸ 12h runs" / "▾ 12h runs" control in the row). Collapsed by
+  default so the grid stays compact.
+- On first expand, fetch /api/apps/data_acquisition/runs?windowHours=12&limit=50 and
+  render the runs as indented sub-rows beneath the (default) row: Status badge, Last
+  run (fmtTime), Age (fmtAge), Issues, Run id (runHref with the inserted_at hint;
+  Duration shows "—" since the run-log is lean). Cache the result in module state so
+  re-expand doesn't refetch; a manual grid refresh may clear it.
+- If the window held more than the cap (the response's nextBefore is set), append a
+  "see all in run log ›" sub-row linking to #appruns=data_acquisition.
+- Resilient + tidy: a failed/in-flight fetch shows a small inline message and never
+  breaks the grid; collapsing hides the sub-rows; if the data_acquisition group is
+  collapsed (Phase 8), its sub-rows are hidden too. Render all run text via
+  textContent (no innerHTML).
+- Keep the existing (default) row intact (status / STALE / health / connectivity
+  badges / run-log + systems links unchanged); the expansion is additive.
+
+Non-goals:
+- No backend/query/endpoint/grant/cache change; no server restart.
+- data_acquisition-specific -- do NOT add this to other apps' rows.
+- Not a replacement for the run-log: it's a capped inline peek that links out to the
+  full paginated/ filterable view.
+- No new pure module required (DOM glue); keep window/cap as small consts.
+
+Expected files / layers:
+- public/index.html only (a daRuns module state + toggle + sub-row render in the grid).
+
+Expected validation:
+- node --test stays green (91/91; no logic files changed). Inline script passes
+  node --check.
+- Live smoke (frontend is bind-mounted; no restart): group by App, expand the
+  data_acquisition row -> ~50 newest run_ids from the last 12h render as sub-rows,
+  each drills down via the at= hint; the "see all" row opens the full run-log; collapse
+  hides them; the grid request and other rows are unaffected.
+
+Read-only / least-privilege constraints:
+- Frontend only; reuses an existing read-only endpoint; no DB/grant change.
+
+Schema assumptions to confirm live:
+- None new. Confirm /api/apps/data_acquisition/runs?windowHours=12&limit=50 returns the
+  expected shape (runs[] + nextBefore) before wiring the UI.
+
+Review questions:
+- Is it data_acquisition-specific and additive (the existing (default) row + badges
+  unchanged)?
+- Is the fetch lazy (only on expand) and resilient (failure never breaks the grid)?
+- Do sub-rows drill down with the inserted_at hint, and does "see all" link to the
+  run-log when capped?
+- Is all run text rendered via textContent, and are sub-rows hidden when the app group
+  is collapsed?

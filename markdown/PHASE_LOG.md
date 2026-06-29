@@ -8,6 +8,128 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 16 — data_acquisition Inline Run Expansion
+
+Date:
+2026-06-29
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_16_da_inline_runs.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_16.md`
+
+## Goals
+
+- Let the single data_acquisition grid row expand inline to its distinct run_ids from
+  the last 12h (lazy, capped newest 50, "see all" → run-log) — surfacing the per-run
+  dimension the "(default)" row hides, without a separate page.
+
+## Built
+
+- `public/index.html` only: a "▸ 12h runs" toggle on the data_acquisition `(default)`
+  row (grouped by app); on expand it fetches
+  `/api/apps/data_acquisition/runs?windowHours=12&limit=50` (the Phase 11 endpoint) and
+  injects the runs as indented sub-rows (Status / Last run / Age / Issues / Run id →
+  drill-down with the `at=` hint; Duration "—"); a "see all in run log ›" sub-row when
+  capped (`nextBefore`). State `daRuns`; refetches on each expand; resilient inline note
+  on failure; text via `textContent`. CSS `.subrun`/`.lead`.
+
+## Schema Facts Confirmed (live DB)
+
+- None new. `/api/apps/data_acquisition/runs?windowHours=12&limit=50` returns 50 newest
+  + `nextBefore` (so the "see all" link shows); ~550 runs exist in 12h.
+
+## Important Decisions
+
+### Reuse the Phase 11 endpoint; frontend-only
+
+Decision: surface a capped inline slice via the existing run-log endpoint rather than
+special-casing the grid cache/query to key data_acquisition by run_id.
+
+Reason: keeps the grid's latest-per-(app,job) model + in-process cache intact and adds
+no backend/query/grant; the run-log already serves exactly this data.
+
+Tradeoff: the inline peek is capped (50) and links out to the full run-log for the
+rest, rather than rendering all ~550 rows in the grid.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none (reuses an existing read-only endpoint).
+- Query / partition-pruning impact: none (no new query).
+- Performance impact: lazy (fetch only on expand); the grid request/cache untouched.
+- Security impact: run text via `textContent`; sub-rows drill down with the `at=` hint.
+- Deployment impact: none — frontend bind-mounted; no restart, env, grant, or schema.
+- API / response-shape compatibility impact: none (no API change).
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test   # 91/91 (no logic files changed)
+node --check (inline index.html script)                   # ok
+curl /api/apps/data_acquisition/runs?windowHours=12&limit=50  # 50 + nextBefore
+```
+
+Results:
+
+- Passed: 91/91; inline script parses; served page exposes the toggle.
+- Failed: none.
+- Not run: none.
+
+Manual / smoke tests:
+
+- Endpoint returns the 12h/50 slice with `nextBefore` set (newest runs mostly ERROR).
+- Browser-interactive expand/collapse rests on the syntax check + the (already
+  reviewed) Phase 11 endpoint; recommend an eyeball pass.
+
+## Review Notes
+
+Source:
+
+- Pending external review on `notes/review_handoff_phase_16.md`.
+
+Critical issues:
+
+- None known.
+
+Accepted fixes:
+
+- None yet.
+
+Deferred findings:
+
+- None.
+
+## Problems Encountered
+
+- None.
+
+## Follow-Up Tasks
+
+- Optional: a per-run drill-down link from the per-system view (Phase 15) — still
+  deferred.
+
+## Commit Readiness
+
+- Requirements implemented: yes (lazy capped inline expansion + see-all).
+- Read-only / least-privilege rules hold: yes (reuses an existing endpoint).
+- Time-windowed queries partition-pruned: n/a (no new query).
+- Schema assumptions confirmed live: yes (endpoint slice shape).
+- Review findings addressed or deferred: handoff written; external review pending.
+- Validation recorded: yes (91/91 + endpoint smoke).
+- Ready to commit: yes.
+
+---
+
 # Phase 15 — Per-System Acquisition History
 
 Date:

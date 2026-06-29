@@ -78,6 +78,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 13 | `prompt_13_runlog_errors_filter.txt` | Completed | Server-side status filter (all/issues/errors) on the per-app run-log via a bound enum `$6` predicate, composing with keyset pagination; warn_error_logs-only. See PHASE_LOG. |
 | 14 | `prompt_14_connectivity_polish.txt` | Completed | Connectivity rollup badge on the `data_acquisition` grid header (offline HHM/MMB counts, links to `#connectivity`) from an additive `rollup` field on `/api/connectivity`; + a refresh button on the connectivity view. No new query/grant. See PHASE_LOG. |
 | 15 | `prompt_15_acquisition_systems.txt` | Completed | Per-system acquisition-history view for `data_acquisition` (per-`system_id` runs/failed over a window + per-source hhm/mmb rollup) from `stats.acquisition_history` (BRIN-bounded, EXPLAIN-confirmed); routed `#acq-systems` view off the data_acquisition header. Expands `ops_dashboard_ro` with SELECT on schema `stats` — the third read outside `util` (fail-closed). Deploy needs the grant applied (superuser) + restart. See PHASE_LOG. |
+| 16 | `prompt_16_da_inline_runs.txt` | Completed | Inline expand the `data_acquisition` grid row to its last-12h distinct run_ids (lazy, capped newest 50, "see all" → run-log), reusing the Phase 11 endpoint. Frontend-only; no backend/grant/restart. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -102,6 +103,7 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 13 | `phase-13-runlog-errors-filter` |
 | 14 | `phase-14-connectivity-polish` |
 | 15 | `phase-15-acquisition-systems` |
+| 16 | `phase-16-da-inline-runs` |
 
 Check `git status --short` before creating or switching branches.
 

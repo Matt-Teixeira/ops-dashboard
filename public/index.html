@@ -49,6 +49,10 @@
     tr.group-head .disclosure { display: inline-block; width: 1em; color: #888; }
     tr.group-head .grp-count { color: #888; font-weight: 400; margin-left: .4rem; }
     tr.group-head .badge { margin-left: .5rem; }
+    /* data_acquisition inline run expansion (Phase 16). */
+    tr.subrun td { background: #8881; font-size: .92em; }
+    tr.subrun td.lead { padding-left: 1.6rem; color: #888; }
+    .da-toggle { margin-left: .5rem; font-weight: 400; }
     /* Filters, status chips, summary + refresh (Phase 9). */
     .controls input[type="search"] { font: inherit; padding: .15rem .45rem; min-width: 18ch; }
     .controls .spacer { flex: 1; }
@@ -139,6 +143,10 @@
     const AUTO_REFRESH_MS = 120000;
     let gridData = null; // last /api/jobs/latest payload
     let connRollupData = null; // last /api/connectivity rollup { hhm:{offline,total}, mmb:{…} } (Phase 14)
+    // data_acquisition inline run expansion (Phase 16): lazy, capped peek at recent run_ids.
+    const DA_RUNS_WINDOW_HOURS = 12;
+    const DA_RUNS_CAP = 50;
+    let daRuns = { expanded: false, loading: false, error: null, runs: [], more: false };
     const gridView = loadGridView();
 
     function loadGridView() {
@@ -197,10 +205,23 @@
       return st;
     }
 
+    const isDaDefault = (j) => j.app === "data_acquisition" && j.job === "(default)";
+
     function jobRow(j) {
       const tr = document.createElement("tr");
       tr.appendChild(cell(j.app));
-      tr.appendChild(cell(j.job));
+      const jobCell = cell(j.job);
+      // data_acquisition collapses to one row; offer an inline peek at its recent
+      // run_ids (Phase 16). Lazy: only fetched when expanded.
+      if (gridView.groupBy === "app" && isDaDefault(j)) {
+        const t = document.createElement("a");
+        t.href = "#";
+        t.className = "muted da-toggle";
+        t.textContent = (daRuns.expanded ? "▾" : "▸") + " " + DA_RUNS_WINDOW_HOURS + "h runs";
+        t.addEventListener("click", (ev) => { ev.preventDefault(); toggleDaRuns(); });
+        jobCell.appendChild(t);
+      }
+      tr.appendChild(jobCell);
       tr.appendChild(jobStatusCell(j));
       tr.appendChild(cell(fmtTime(j.lastRun)));
       tr.appendChild(cell(fmtAge(j.ageMs), "num"));
@@ -324,9 +345,82 @@
           frag.appendChild(groupHeadRow(g));
           if (gridView.collapsed.has(g.key)) continue; // collapsed -> hide member rows
         }
-        for (const j of g.rows) frag.appendChild(jobRow(j));
+        for (const j of g.rows) {
+          frag.appendChild(jobRow(j));
+          // Inject data_acquisition's recent-run sub-rows right under its row.
+          if (gridView.groupBy === "app" && isDaDefault(j) && daRuns.expanded) {
+            for (const sr of daSubRows()) frag.appendChild(sr);
+          }
+        }
       }
       tb.appendChild(frag);
+    }
+
+    // --- data_acquisition inline run expansion (Phase 16) --------------------
+    // Reuses the Phase 11 run-log endpoint; a capped, lazy peek under the grid row.
+
+    function toggleDaRuns() {
+      daRuns.expanded = !daRuns.expanded;
+      if (daRuns.expanded) loadDaRuns(); // refetch fresh on each expand
+      else renderGrid();
+    }
+
+    async function loadDaRuns() {
+      daRuns.loading = true; daRuns.error = null; renderGrid();
+      try {
+        const res = await fetch("/api/apps/data_acquisition/runs?windowHours=" + DA_RUNS_WINDOW_HOURS + "&limit=" + DA_RUNS_CAP);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        daRuns.runs = Array.isArray(data.runs) ? data.runs : [];
+        daRuns.more = !!data.nextBefore;
+      } catch {
+        daRuns.error = "couldn't load runs"; daRuns.runs = []; daRuns.more = false;
+      }
+      daRuns.loading = false;
+      renderGrid();
+    }
+
+    function daNote(text) {
+      const tr = document.createElement("tr");
+      tr.className = "subrun";
+      const td = document.createElement("td");
+      td.colSpan = GRID_COLS; td.className = "lead muted"; td.textContent = text;
+      tr.appendChild(td);
+      return tr;
+    }
+
+    function daSubRows() {
+      if (daRuns.loading) return [daNote("loading " + DA_RUNS_WINDOW_HOURS + "h runs…")];
+      if (daRuns.error) return [daNote(daRuns.error)];
+      if (!daRuns.runs.length) return [daNote("no runs in the last " + DA_RUNS_WINDOW_HOURS + "h")];
+      const rows = daRuns.runs.map(subRunRow);
+      if (daRuns.more) {
+        const tr = document.createElement("tr"); tr.className = "subrun";
+        const td = document.createElement("td"); td.colSpan = GRID_COLS; td.className = "lead";
+        const a = document.createElement("a"); a.href = "#appruns=data_acquisition"; a.className = "muted";
+        a.textContent = "see all in run log ›";
+        td.appendChild(a); tr.appendChild(td);
+        rows.push(tr);
+      }
+      return rows;
+    }
+
+    function subRunRow(r) {
+      const tr = document.createElement("tr");
+      tr.className = "subrun";
+      tr.appendChild(cell(""));
+      tr.appendChild(cell("↳ run", "lead"));
+      const st = cell("");
+      const b = document.createElement("span"); b.className = "badge " + r.status; b.textContent = r.status;
+      st.appendChild(b); tr.appendChild(st);
+      tr.appendChild(cell(fmtTime(r.insertedAt)));
+      tr.appendChild(cell(fmtAge(Date.now() - Date.parse(r.insertedAt)), "num"));
+      tr.appendChild(cell("—", "num")); // run-log is lean: no duration
+      tr.appendChild(cell(r.issueCount, "num"));
+      const idc = document.createElement("td");
+      const a = document.createElement("a"); a.href = runHref(r.runId, r.insertedAt); a.textContent = r.runId;
+      idc.appendChild(a); tr.appendChild(idc);
+      return tr;
     }
 
     // Summary header + status chips. Counts are over the WHOLE grid (gridData.jobs)
