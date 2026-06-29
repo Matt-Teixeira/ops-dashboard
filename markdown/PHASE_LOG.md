@@ -119,15 +119,20 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_9.md`.
+- External (Codex) on `notes/review_handoff_phase_9.md`.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: `filterJobs` is pure; STALE matches only `j.stale === true`;
+  status tokens are OR'd; search combines with status as an AND; `renderGrid()` does
+  filter → sort → group so group counts/roll-ups reflect visible rows; summary chips
+  build from the full grid with `showing K` separate; localStorage hydration is
+  guarded/allowlisted; auto-refresh uses one 120s interval gated on dashboard
+  visibility. `node --test` passed.
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
