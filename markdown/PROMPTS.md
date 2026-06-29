@@ -21,6 +21,9 @@ direction is to **harden and future-proof** it:
 - surface per-equipment connectivity (which systems are offline) that the
   `data_acquisition/(default)` bucket hides — read-only over the `alert.*` tables
   (Phase 10)
+- give each app an on-demand, paginated run-log (every run_id in a window) so
+  high-frequency single-bucket apps like `data_acquisition` are inspectable beyond
+  the grid's single latest run — read-only, not cached (Phase 11)
 
 Current decisions:
 
@@ -65,6 +68,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 8 | `prompt_8_grid_grouping_sort.txt` | Completed | Client-side grid grouping (app/job/none, collapsible) + sortable columns incl. last-run datetime; pure transforms in `public/grid-view.js` (browser-served, not `lib/`). Frontend-only, additive. See PHASE_LOG. |
 | 9 | `prompt_9_grid_filters.txt` | Completed | Filter/search box + status chips (incl. STALE) + summary-counts header + last-updated/auto-refresh; `filterJobs`/`summarize` in `public/grid-view.js`. Frontend-only. See PHASE_LOG. |
 | 10 | `prompt_10_connectivity_panel.txt` | Completed | Dedicated read-only Connectivity view over `alert.offline_hhm_conn`/`offline_mmb_conn` (latest per-system state, offline-first); expands `ops_dashboard_ro` with SELECT on schema `alert` — the first read outside `util`. Deploy needs the grant applied (superuser) + restart. See PHASE_LOG. |
+| 11 | `prompt_11_app_run_history.txt` | Pending | On-demand, paginated per-app run-log view (every run_id in a window, default 24h) so high-frequency single-bucket apps like `data_acquisition` are inspectable; lean warn_error_logs-only query (no `verbose_log` detoast), keyset pagination, not cached. Frontend + one read-only query. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -84,6 +88,7 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 8 | `phase-8-grid-grouping-sort` |
 | 9 | `phase-9-grid-filters` |
 | 10 | `phase-10-connectivity-panel` |
+| 11 | `phase-11-app-run-history` |
 
 Check `git status --short` before creating or switching branches.
 

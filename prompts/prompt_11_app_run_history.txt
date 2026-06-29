@@ -1,0 +1,106 @@
+Phase 11 - Per-App Run History
+
+Goal:
+Add a dedicated, on-demand, paginated run-log view per app: every run (run_id) for
+one app within a recent window (default 24h, configurable), newest first. This makes
+high-frequency, single-bucket apps inspectable -- the job grid shows only the latest
+run per (app, job), so data_acquisition (all runs bucket to "(default)") collapses to
+one arbitrary recent run and cannot represent an app that runs constantly and mostly
+errors. Read-only; the grid and its cache are unchanged.
+
+Background (verified this session - do not re-discover):
+- The grid shows latest-run-per-(app, job) from the in-process cache
+  (lib/run-cache.js). data_acquisition has no argv job, so every run buckets to
+  "(default)" and the grid row reflects ONE recent run. Observed: in the last 24h,
+  data_acquisition ran 1104 times (1914/2207 errored over 2 days), hhm_rpp_philips
+  816, ops-dashboard 288, hhm_rpp_ge 144 -- ~2352 runs/24h total and growing.
+- Per-run status + issue count come from warn_error_logs (a small pre-filtered JSON
+  array): no verbose_log detoast needed. run_id is NOT indexed; app_name and
+  inserted_at ARE; the table is month-partitioned on inserted_at.
+- The in-process cache holds ONE row per (app, job) by design; run history must NOT
+  go through it (it would grow unbounded). Use a direct, partition-pruned query.
+- Existing pieces to reuse: the hash router and view show/hide in public/index.html
+  (#run=, #connectivity), runHref/runHash (drill-down link + at= partition hint),
+  fmtAge/fmtTime/cell, the badge CSS, the runReq stale-fetch guard, and the
+  Math.min/Math.max limit-clamp idiom in server.js (/api/errors).
+
+Scope:
+- Query in db/queries.js: APP_RUNS_SQL + an appRuns(appName, sinceIso, limit, cursor)
+  function. Select ONLY lean columns -- run_id, inserted_at, a status derived from
+  warn_error_logs (ERROR > WARN > SUCCESS), and json_array_length(warn_error_logs) as
+  issue_count. Do NOT touch verbose_log (no detoast; no job/duration this phase).
+  Filter `app_name = $1 AND inserted_at > $2::timestamptz` (partition pruning), order
+  by inserted_at DESC, LIMIT $n. Mirror the warn_error_logs status expression in
+  JOBS_LATEST_SQL so grid and run-log agree.
+- Stable pagination ("load more"): keyset on (inserted_at, run_id) DESC, not OFFSET,
+  so new runs arriving at the top don't shift the page. The cursor is the last row's
+  (inserted_at, run_id); the next page adds
+  `AND (inserted_at < $cur_ts OR (inserted_at = $cur_ts AND run_id < $cur_id))`.
+  This must handle runs that share an inserted_at (data_acquisition fires sub-second).
+- Endpoint GET /api/apps/:app/runs in server.js: query params windowHours (default
+  from env APP_RUNS_LOOKBACK_HOURS=24, clamped), limit (default 200, clamp 1..500),
+  and an optional cursor (before=<iso>&beforeId=<uuid>). URL-decode :app. Validate the
+  cursor like the run-id/inserted_at hints already are. Return
+  { app, windowHours, count, runs:[{runId, insertedAt, status, issueCount}],
+    nextBefore, nextBeforeId } where next* are the last row's cursor when
+  count === limit (more may exist), else null. Errors via the shared sanitized handler.
+- Frontend (public/index.html): a routed run-log view, e.g. #appruns=<app>. Reach it
+  from the grid -- make the Phase 8 app group-head open its app's run-log (a link/
+  affordance on the group header), so clicking an app shows all its runs. Render a
+  table: When, Status (badge), Issues, Run id (link to the drill-down via
+  runHref(runId, insertedAt) so the at= hint prunes). A "load more" button fetches the
+  next page with nextBefore/nextBeforeId and appends rows; hide it when next* is null.
+  Reuse the runReq guard so a slow/again-navigated fetch can't render stale. All
+  payload text via textContent (no innerHTML).
+- Config: APP_RUNS_LOOKBACK_HOURS (+ optional APP_RUNS_LIMIT) in .env.example and
+  markdown/ENVIRONMENT.md.
+
+Non-goals:
+- No cache involvement and no change to the grid's latest-run-per-(app,job) model or
+  lib/run-cache.js.
+- No verbose_log access this phase: no per-run duration or job name (would detoast
+  every row); data_acquisition's job is "(default)" anyway. Defer if wanted.
+- Per-(app, job) run history and a server-side "errors only" filter are out of scope
+  (the view is per-APP, all runs; client-side filtering of loaded rows may come later
+  / reuse Phase 9 ideas).
+- No writes, no new grant, no new schema; still ops_dashboard_ro.
+- No framework or build step.
+
+Expected files / layers:
+- db/queries.js (APP_RUNS_SQL + appRuns), server.js (route + require/clamp),
+  public/index.html (#appruns view, router branch, group-head link, load-more),
+  test/ (query-shape test + any pure cursor/clamp helper), .env.example,
+  markdown/ENVIRONMENT.md.
+
+Expected validation:
+- node --test: assert APP_RUNS_SQL filters inserted_at (partition-prune guard) and
+  app_name, derives status from warn_error_logs (matching JOBS_LATEST_SQL), orders by
+  inserted_at DESC, and never references verbose_log; unit-test any pure cursor/clamp
+  helper. Keep DB-free (string/structure assertions like the existing tests).
+- Live EXPLAIN on APP_RUNS_SQL as ops_dashboard_ro: confirm it prunes to the current
+  partition(s) and uses the app_name/inserted_at indexes, not a full-table scan.
+- Live smoke: GET /api/apps/data_acquisition/runs -> ~200 newest runs, sub-second;
+  "load more" via the cursor returns the next page with no gaps/dupes across a shared
+  inserted_at; each run drills down with a working at= hint. Confirm the grid, error
+  feed, connectivity, and /healthz are unaffected.
+
+Read-only / least-privilege constraints:
+- Frontend + one new read-only query; still ops_dashboard_ro (no new grant -- it
+  already has SELECT on util.app_run_logs). No writes/DDL.
+
+Schema assumptions to confirm live (before coding):
+- Re-confirm inserted_at partition pruning and that app_name is indexed (EXPLAIN).
+- Confirm warn_error_logs is the small pre-filtered array and that status derived
+  from it matches the grid.
+- Confirm per-app 24h volume so the default cap/window are sane (data_acquisition
+  ~1100/24h today).
+
+Review questions:
+- Is the query partition-pruned (inserted_at) and does it avoid verbose_log entirely
+  (status/issues from warn_error_logs only)?
+- Is pagination keyset on (inserted_at, run_id) so equal-timestamp runs aren't skipped
+  or duplicated, and so new top-of-list runs don't shift pages?
+- Does every run row link to the drill-down with the inserted_at (at=) hint?
+- Are windowHours/limit clamped, and is nextBefore/nextBeforeId correct (null when the
+  last page is reached)?
+- Is the in-process cache and the grid's latest-run model left completely untouched?
