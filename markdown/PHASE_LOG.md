@@ -95,15 +95,19 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_16.md`.
+- External (Codex) on `notes/review_handoff_phase_16.md`. `node --test` 91/91 +
+  inline script syntax check.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: the toggle is scoped to data_acquisition/(default) while
+  grouped by app; the lazy fetch reuses the Phase 11 endpoint; failures render an
+  inline note without breaking the grid; sub-run links preserve the `at=` hint via
+  `runHref(r.runId, r.insertedAt)`; rendering uses DOM/text APIs (no new innerHTML).
 
 Accepted fixes:
 
-- None yet.
+- None.
 
 Deferred findings:
 
