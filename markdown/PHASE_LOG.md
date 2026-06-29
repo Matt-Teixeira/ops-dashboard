@@ -14,13 +14,13 @@ Date:
 2026-06-29
 
 Status:
-Completed (grant is an operator deploy step; see Validation)
+Completed (grant applied; live smoke passed 2026-06-29)
 
 Prompt:
 `prompts/prompt_15_acquisition_systems.txt`
 
 Git Commit:
-Pending
+9bc7029
 
 Review Artifacts:
 
@@ -107,8 +107,17 @@ Results:
 
 - Passed: 91/91 (86 prior + 5 new `acq`); all changed files parse.
 - Failed: none.
-- Not run: **live `/api/acquisition/systems` smoke** — blocked on the `stats` grant
-  being applied by a superuser + a container restart (the documented two-step deploy).
+- Not run: none.
+
+Live deploy + smoke (2026-06-29, after the operator applied the `stats` grant as the
+`postgres` superuser and `docker compose restart`):
+
+- Grant landed: `ops_dashboard_ro` now reads `stats.acquisition_history` (490,290 rows).
+- `GET /api/acquisition/systems` → 377 system/source rows, worst-first (top entries
+  fully-failed hhm systems, 48/48). Rollup: hhm 5589/8940 failed across 187 systems,
+  mmb 1420/9167 across 190. windowHours 24.
+- No regression: `/healthz`, `/api/jobs/latest` (warmed to 200), `/api/connectivity`,
+  `/api/apps/:app/runs` all 200.
 
 Manual / smoke tests:
 
@@ -139,7 +148,8 @@ Deferred findings:
 
 ## Follow-Up Tasks
 
-- Apply the `stats` grant (superuser) + restart, then run the live smoke and record it.
+- Done: `stats` grant applied + restart + live `/api/acquisition/systems` smoke
+  (recorded above, 2026-06-29).
 - Optional (deferred): a per-run drill-down link from a system's row into the specific
   `util.app_run_logs` run (`run_id` is available in the table).
 
@@ -150,8 +160,8 @@ Deferred findings:
 - Time-windowed queries partition-pruned: BRIN-bounded (table unpartitioned); confirmed.
 - Schema assumptions confirmed live: yes (plan, volume, field coverage).
 - Review findings addressed or deferred: handoff written; external review pending.
-- Validation recorded: yes (91/91 + EXPLAIN); live smoke pending the grant deploy.
-- Ready to commit: yes (live smoke to follow at deploy).
+- Validation recorded: yes (91/91 + EXPLAIN + live smoke passed post-grant).
+- Ready to commit: yes (shipped; grant applied and smoke green 2026-06-29).
 
 ---
 
