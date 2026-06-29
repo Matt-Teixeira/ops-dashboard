@@ -37,7 +37,8 @@ Review Artifacts:
 - `public/grid-view.js` (new): pure, DOM-free transforms — `sortJobs(jobs,key,dir)`,
   `groupJobs(jobs,by)`, `groupRollupStatus(rows)`, shared `STATUS_RANK`
   {ERROR:0,WARN:1,SUCCESS:2,INFO:3}. Nulls sort last in both directions; status sort
-  is worst-first with an app/job tiebreak; never mutates input. Dual export
+  is worst-first, tie-broken by most-stale-first (`ageMs`) then an app/job fallback;
+  never mutates input. Dual export
   (browser `window.GridView` + Node `require`).
 - `test/grid-view.test.js` (new): +17 tests (50 total).
 - `public/index.html`: `loadGrid()` split into fetch → store `gridData` →
@@ -121,15 +122,20 @@ Manual / smoke tests:
 
 Source:
 
-- Pending external review on `notes/review_handoff_phase_8.md`.
+- External (Codex) on `notes/review_handoff_phase_8.md`.
 
 Critical issues:
 
-- None known.
+- None. Codex confirmed: fetch/render split intact, controls re-render from cached
+  `gridData`, grouped rows preserve `runHref(j.runId, j.lastRun)`, payload text via
+  text nodes (no innerHTML), localStorage guarded/allowlisted, server-side sort
+  (`server.js:119`) unchanged; `node --test` 50/50.
 
 Accepted fixes:
 
-- None yet.
+- (nit, docs only) Documentation drift: this entry said the status sort had an
+  "app/job tiebreak"; the code/tests actually tie-break by most-stale-first (`ageMs`)
+  then fall back to app/job. Corrected in this entry and the handoff. No code change.
 
 Deferred findings:
 

@@ -52,7 +52,8 @@ container already serves these files):
 3. **`grid-view.js` purity & correctness.** It must be DOM-free and dependency-free
    (so the Node test can require it). Check: `sortJobs` does not mutate its input;
    nulls sort **last in both directions** (`durationMs`/`ageMs` can be null); the
-   status comparator is worst-first by `STATUS_RANK` with a stable app/job tiebreak;
+   status comparator is worst-first by `STATUS_RANK`, tie-broken by most-stale-first
+   (`ageMs`) then a stable app/job fallback;
    `Date.parse` failures on `lastRun` are treated as null, never `NaN` ordering.
 4. **DOM safety (no innerHTML for data).** All log/payload-derived text is rendered
    via `cell()`/`textContent`/`createTextNode` (group label, counts, badges). Confirm
