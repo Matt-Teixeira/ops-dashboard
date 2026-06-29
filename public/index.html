@@ -349,7 +349,7 @@
           frag.appendChild(jobRow(j));
           // Inject data_acquisition's recent-run sub-rows right under its row.
           if (gridView.groupBy === "app" && isDaDefault(j) && daRuns.expanded) {
-            for (const sr of daSubRows()) frag.appendChild(sr);
+            for (const sr of daSubRows(j.runId)) frag.appendChild(sr); // exclude the run already on this row
           }
         }
       }
@@ -389,11 +389,19 @@
       return tr;
     }
 
-    function daSubRows() {
+    function daSubRows(excludeRunId) {
       if (daRuns.loading) return [daNote("loading " + DA_RUNS_WINDOW_HOURS + "h runs…")];
       if (daRuns.error) return [daNote(daRuns.error)];
-      if (!daRuns.runs.length) return [daNote("no runs in the last " + DA_RUNS_WINDOW_HOURS + "h")];
-      const rows = daRuns.runs.map(subRunRow);
+      // Show the OTHER distinct runs: drop the run already shown on the (default) row,
+      // and de-dup defensively so each run_id appears at most once.
+      const seen = new Set();
+      const runs = daRuns.runs.filter((r) => {
+        if (r.runId === excludeRunId || seen.has(r.runId)) return false;
+        seen.add(r.runId);
+        return true;
+      });
+      if (!runs.length) return [daNote("no other runs in the last " + DA_RUNS_WINDOW_HOURS + "h")];
+      const rows = runs.map(subRunRow);
       if (daRuns.more) {
         const tr = document.createElement("tr"); tr.className = "subrun";
         const td = document.createElement("td"); td.colSpan = GRID_COLS; td.className = "lead";

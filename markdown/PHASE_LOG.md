@@ -115,7 +115,13 @@ Deferred findings:
 
 ## Problems Encountered
 
-- None.
+- Problem (user feedback, post-merge): the expanded dropdown repeated the run_id
+  already shown on the `(default)` row — the parent's latest run is also the newest
+  entry in the list, so it appeared twice. (The list itself is distinct; util has one
+  row per run_id.)
+  Resolution: `daSubRows(excludeRunId)` drops the parent row's run_id (and de-dups
+  defensively) so the dropdown lists the OTHER distinct runs — one of each. Frontend
+  only; 91/91 still green.
 
 ## Follow-Up Tasks
 
