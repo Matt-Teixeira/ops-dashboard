@@ -52,7 +52,6 @@
     /* data_acquisition inline run expansion (Phase 16). */
     tr.subrun td { background: #8881; font-size: .92em; }
     tr.subrun td.lead { padding-left: 1.6rem; color: #888; }
-    .da-toggle { margin-left: .5rem; font-weight: 400; }
     /* Filters, status chips, summary + refresh (Phase 9). */
     .controls input[type="search"] { font: inherit; padding: .15rem .45rem; min-width: 18ch; }
     .controls .spacer { flex: 1; }
@@ -210,30 +209,31 @@
     function jobRow(j) {
       const tr = document.createElement("tr");
       tr.appendChild(cell(j.app));
-      const jobCell = cell(j.job);
-      // data_acquisition collapses to one row; offer an inline peek at its recent
-      // run_ids (Phase 16). Lazy: only fetched when expanded.
-      if (gridView.groupBy === "app" && isDaDefault(j)) {
-        const t = document.createElement("a");
-        t.href = "#";
-        t.className = "muted da-toggle";
-        t.textContent = (daRuns.expanded ? "▾" : "▸") + " " + DA_RUNS_WINDOW_HOURS + "h runs";
-        t.addEventListener("click", (ev) => { ev.preventDefault(); toggleDaRuns(); });
-        jobCell.appendChild(t);
-      }
-      tr.appendChild(jobCell);
+      tr.appendChild(cell(j.job));
       tr.appendChild(jobStatusCell(j));
       tr.appendChild(cell(fmtTime(j.lastRun)));
       tr.appendChild(cell(fmtAge(j.ageMs), "num"));
       tr.appendChild(cell(fmtDur(j.durationMs), "num"));
       tr.appendChild(cell(j.issueCount, "num"));
       const idCell = document.createElement("td");
-      const link = document.createElement("a");
-      // Open the drill-down view, passing inserted_at as the hint (`at`) so the
-      // run query prunes to one partition.
-      link.href = runHref(j.runId, j.lastRun);
-      link.textContent = j.runId;
-      idCell.appendChild(link);
+      if (gridView.groupBy === "app" && isDaDefault(j)) {
+        // data_acquisition is a bucket of many runs, not one. Its run-id cell is the
+        // toggle for the inline list of distinct runs (Phase 16) -- the dropdown is the
+        // authoritative per-run list, so the summary row claims no single run_id.
+        const t = document.createElement("a");
+        t.href = "#";
+        t.className = "muted";
+        t.textContent = (daRuns.expanded ? "▾" : "▸") + " " + DA_RUNS_WINDOW_HOURS + "h runs";
+        t.addEventListener("click", (ev) => { ev.preventDefault(); toggleDaRuns(); });
+        idCell.appendChild(t);
+      } else {
+        const link = document.createElement("a");
+        // Open the drill-down view, passing inserted_at as the hint (`at`) so the
+        // run query prunes to one partition.
+        link.href = runHref(j.runId, j.lastRun);
+        link.textContent = j.runId;
+        idCell.appendChild(link);
+      }
       tr.appendChild(idCell);
       return tr;
     }
@@ -349,7 +349,7 @@
           frag.appendChild(jobRow(j));
           // Inject data_acquisition's recent-run sub-rows right under its row.
           if (gridView.groupBy === "app" && isDaDefault(j) && daRuns.expanded) {
-            for (const sr of daSubRows(j.runId)) frag.appendChild(sr); // exclude the run already on this row
+            for (const sr of daSubRows()) frag.appendChild(sr); // the summary row claims no run_id, so list them all
           }
         }
       }
@@ -389,18 +389,18 @@
       return tr;
     }
 
-    function daSubRows(excludeRunId) {
+    function daSubRows() {
       if (daRuns.loading) return [daNote("loading " + DA_RUNS_WINDOW_HOURS + "h runs…")];
       if (daRuns.error) return [daNote(daRuns.error)];
-      // Show the OTHER distinct runs: drop the run already shown on the (default) row,
-      // and de-dup defensively so each run_id appears at most once.
+      // The authoritative list of distinct runs (the summary row claims no run_id).
+      // De-dup defensively so each run_id appears at most once.
       const seen = new Set();
       const runs = daRuns.runs.filter((r) => {
-        if (r.runId === excludeRunId || seen.has(r.runId)) return false;
+        if (seen.has(r.runId)) return false;
         seen.add(r.runId);
         return true;
       });
-      if (!runs.length) return [daNote("no other runs in the last " + DA_RUNS_WINDOW_HOURS + "h")];
+      if (!runs.length) return [daNote("no runs in the last " + DA_RUNS_WINDOW_HOURS + "h")];
       const rows = runs.map(subRunRow);
       if (daRuns.more) {
         const tr = document.createElement("tr"); tr.className = "subrun";
