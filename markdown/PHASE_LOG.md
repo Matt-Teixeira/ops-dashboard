@@ -199,11 +199,20 @@ found (all fixed in the same review commit):
 Post-fix validation: 113/113 tests; restart + live re-smoke green (DA clamp, lean-app
 500 intact, systems 48h echo, incidents unaffected, clean boot).
 
+### Post-review: engine index landed; ORDER BY aligned (2026-07-21)
+
+incident-engine shipped the drill-down index (decision upgraded from ADD to **REPLACE**:
+`idx_error_events_fingerprint_entity_dt` now exists, the old `(fingerprint, dt DESC)` is
+gone; engine `main` @ `e3acf72`). Verifying our query against it exposed a mismatch on
+OUR side: `ORDER BY dt DESC NULLS LAST` didn't match the index's `DESC` (= NULLS FIRST)
+ordering, so the planner fetched-all+sorted — worst-case chatty incident **214ms**
+instead of the index walk. Fixed to plain `ORDER BY dt DESC` → **2.4ms** (~90×);
+justified live: `dt` is never NULL (0 of 361,847 events; the engine's null-dt fallback
+happens at aggregation, not in this table's ordering). SQL-contract test now asserts the
+exact index-matching order and forbids `NULLS LAST`.
+
 ## Follow-Up Tasks
 
-- (Owner-side, accepted) incident-engine ADDs `(fingerprint, entity, dt DESC)` on
-  `error_events`; nothing changes in this repo's query when it lands — the planner
-  picks it up.
 - Onboarding suite-health overview + legend (old Phase 19 idea) remains open roadmap.
 
 ## Commit Readiness

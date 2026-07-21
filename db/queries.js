@@ -384,8 +384,14 @@ WHERE id = $1::bigint;
 
 // Drill-down: the raw L0 events behind one incident, newest first. Keyed by the
 // incident's (fingerprint, entity) -- the engine stamps `entity` on every event
-// row precisely so consumers never re-derive it. Uses idx_error_events_fingerprint_dt;
-// LIMIT bounds the payload. raw_event/err_msg stay small; no verbose_log anywhere.
+// row precisely so consumers never re-derive it. The ORDER BY is plain `dt DESC`
+// (btree DESC = NULLS FIRST) deliberately: it matches the engine's
+// idx_error_events_fingerprint_entity_dt exactly, so the planner walks the index
+// and stops at LIMIT (worst-case chatty incident: 2.4ms). An explicit NULLS LAST
+// broke that match and forced fetch-all+sort (214ms on the same incident) to
+// guard a case that doesn't occur -- dt is never NULL in practice (0/361k live;
+// the engine falls back to inserted_at at aggregation, not here). raw_event/
+// err_msg stay small; no verbose_log anywhere.
 const INCIDENT_EVENTS_SQL = `
 SELECT
   run_id, event_ord, src_app_name, type, func, tag,
@@ -393,7 +399,7 @@ SELECT
   error_category, error_type, dt, inserted_at
 FROM incidents.error_events
 WHERE fingerprint = $1 AND entity = $2
-ORDER BY dt DESC NULLS LAST
+ORDER BY dt DESC
 LIMIT $3;
 `;
 

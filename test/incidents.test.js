@@ -162,6 +162,8 @@ test("incidents SQL: bound params, no interpolation, no verbose_log, index-frien
   assert.match(list, /last_seen DESC/, "matches idx_incidents_severity_last_seen");
   assert.match(list, /category_source/, "provenance always selected with category");
   assert.match(detail, /id = \$1::bigint/, "detail keyed by bound bigint id");
-  assert.match(events, /fingerprint = \$1 AND entity = \$2/, "drill-down keyed to hit idx_error_events_fingerprint_dt");
+  assert.match(events, /fingerprint = \$1 AND entity = \$2/, "drill-down keyed to hit the engine's (fingerprint, entity, dt DESC) index");
+  assert.match(events, /ORDER BY dt DESC\n/, "plain dt DESC -- must match the index ordering exactly");
+  assert.doesNotMatch(events, /NULLS LAST/, "NULLS LAST breaks the index match and forces fetch-all+sort");
   assert.match(events, /LIMIT \$3/, "drill-down bounded");
 });
