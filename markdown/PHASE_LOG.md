@@ -89,7 +89,8 @@ branches on it (dashed muted badge + tooltip when `oracle`).
 Reason: The producer flagged this as the one place a naive view actively misleads: an
 oracle category is the equipment's latest *unrelated* classified error, stamped onto an
 `unknown` incident (live-verified: incident 17190 says `rsync_io_timeout`/oracle while
-its own events read "No new monitoring data found."/unknown).
+its own 667 events are 666 `unknown` + 1 `no_new_data` — zero rsync events; confirmed
+by the schema owner in review).
 
 Tradeoff: One extra field everywhere; worth it — trust in the view depends on it.
 
@@ -99,8 +100,12 @@ Tradeoff: One extra field everywhere; worth it — trust in the view depends on 
   and `pipeline_state` SELECT proven denied as `ops_dashboard_ro`.
 - Query / partition-pruning impact: `incidents.*` is not partitioned (engine's DDL);
   list is a 528-row indexed sort (~1.4ms), drill-down is index-driven + LIMIT.
-- Performance impact: request-path; list ~1.4ms; worst-case drill-down (25k-event
-  incident) ~95ms via bitmap on `(fingerprint, dt DESC)` — within the sub-second budget.
+- Performance impact: request-path; list ~1.4ms. Drill-down: my warm-cache measure was
+  ~95ms on a 25k-event incident; the schema owner's cold-cache re-run found the true
+  worst case is a 45,509-event incident at **1,748ms cold** — the `(fingerprint, dt
+  DESC)` bitmap path fetches all rows and sorts, ignoring the LIMIT. See Review Notes:
+  the owner validated a `(fingerprint, entity, dt DESC)` composite → ordered Index Scan
+  honoring the LIMIT, **3.4ms** (~500×), to be ADDed on their side.
 - Security impact: filters shape-normalized ('all' fallback), `:id` regex-gated before
   the `::bigint` cast; params always bound; sanitized 500s.
 - Deployment impact: two-step — apply the incidents grant (superuser) + restart, else
@@ -123,19 +128,35 @@ Results:
   GROUP BY at the same moment (209/269/50 · 361/30/137); `?state=recurring` → 30 rows,
   all recurring; `severity=DROP TABLE` normalizes to `all`; `/api/incidents/abc` → 400;
   oracle incident 17190 carries `categorySource:"oracle"` with 5 assessment reasons +
-  recommended action + 100 events with working run links; existing views unchanged.
+  recommended action + the newest 100 (of 667) events with working run links; existing
+  views unchanged.
 - Failed: none.
 
 ## Review Notes
+
+Source: incident-engine (the schema owner) reviewed the integration end-to-end
+(2026-07-21). Result: **accepted, closed out.**
+
+- Boundary: confirmed from the owner's side — `ops_dashboard_ro` reads exactly the two
+  granted tables; INSERT and `pipeline_state` SELECT both raise `insufficient_privilege`.
+- 17190: confirmed as the proof case, with a precision correction folded in above (667
+  events = 666 `unknown` + 1 `no_new_data`; my "100 events" was the endpoint's
+  `eventLimit` cap, not the total — the detail header now says "newest N of TOTAL").
+- Index follow-up: **accepted with evidence.** Cold-cache truth: worst case 45,509-event
+  incident, 1,748ms via the existing bitmap path; a `(fingerprint, entity, dt DESC)`
+  composite (tested in a rolled-back txn) turns it into an ordered Index Scan that
+  stops at the LIMIT → 3.4ms. Owner's decision: ADD the composite alongside the
+  existing `(fingerprint, dt DESC)` (which shows 37k scans from a not-yet-identified
+  consumer) rather than replace — held until that consumer is identified.
 
 Critical issues: none. One test regex fixed during development (`inserted_at` matched
 `/INSERT/` — now word-bounded).
 
 ## Follow-Up Tasks
 
-- Drill-down on very chatty incidents (25k events for one fingerprint×entity) does a
-  25k-row bitmap+sort (~95ms). If it grows, propose a `(fingerprint, entity, dt DESC)`
-  index to incident-engine (schema owner) — not actionable from this repo.
+- (Owner-side, accepted) incident-engine ADDs `(fingerprint, entity, dt DESC)` on
+  `error_events`; nothing changes in this repo's query when it lands — the planner
+  picks it up.
 - Onboarding suite-health overview + legend (old Phase 19 idea) remains open roadmap.
 
 ## Commit Readiness

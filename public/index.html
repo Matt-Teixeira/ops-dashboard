@@ -1546,7 +1546,12 @@
       const evHead = document.createElement("h2");
       evHead.style.fontSize = ".9rem";
       evHead.style.margin = "1rem 0 .2rem";
-      evHead.textContent = `Events (${events.length}${events.length >= data.eventLimit ? ", newest " + data.eventLimit : ""})`;
+      // When the list is capped, say so against the incident's true total
+      // (occurrenceCount) -- "100 events" when there are 667 misleads the operator.
+      evHead.textContent =
+        events.length >= data.eventLimit && i.occurrenceCount > events.length
+          ? `Events (newest ${events.length} of ${i.occurrenceCount})`
+          : `Events (${events.length})`;
       view.appendChild(evHead);
 
       if (!events.length) {

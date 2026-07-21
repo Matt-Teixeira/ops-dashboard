@@ -36,12 +36,14 @@ incident-engine is untouched.
 4. **Self-check:** the tile numbers and the list come from the same response; tiles must
    equal a hand-run severity×state GROUP BY at the same moment.
 5. **Bounded drill-down:** events query is `(fingerprint, entity)` + `dt DESC` +
-   `LIMIT ≤ 500`; worst live case ~25k rows for one incident → ~95ms bitmap+sort.
+   `LIMIT ≤ 500`. (Review outcome: true worst case is a 45,509-event incident —
+   1,748ms cold via the bitmap path; the owner validated and accepted a
+   `(fingerprint, entity, dt DESC)` composite → 3.4ms, to be ADDed engine-side.)
 
 ## Known weak spots — please scrutinize
 
-- The drill-down's 95ms worst case (chatty incidents). Acceptable per the sub-second
-  budget; a better index belongs to the schema owner (tracked follow-up).
+- ~~The drill-down's worst case (chatty incidents)~~ — resolved in review: owner-side
+  composite index accepted (see PHASE_LOG Review Notes).
 - `entityCell` links any `SME*` entity to `#system=` — a system with no recent window
   events shows an empty Phase 17 detail (correct but potentially surprising).
 - The rollup and list are two queries in one `Promise.all` — a row committed between
