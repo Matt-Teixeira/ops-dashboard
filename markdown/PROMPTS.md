@@ -86,8 +86,12 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 16 | `prompt_16_da_inline_runs.txt` | Completed | Inline expand the `data_acquisition` grid row to its last-12h distinct run_ids (lazy, capped newest 50, "see all" → run-log), reusing the Phase 11 endpoint. Frontend-only; no backend/grant/restart. See PHASE_LOG. |
 | 17 | `prompt_17_per_system_view.txt` | Completed | Per-equipment-system correlation view: `GET /api/systems` (cross-app per-`note.sme` warn/error rollup, worst-first) + `GET /api/systems/:id` (breakdown by `(app,type,func)` with latest run drill-down, joined to `alert.*` for the classified `error_category`). `#systems`/`#system=<id>` routed views + top-nav link; connectivity/acq system ids now link in. `warn_error_logs`-only (EXPLAIN-pruned), request-path (clamp 1..168h). No new grant (reads `util`+`alert`). Read-only insight, no write-back. See PHASE_LOG. |
 
+| 18 | — (ad-hoc user request; no prompt file) | Completed | data_acquisition run-log **job type**: the 12h-runs dropdown labels each run with its real job (`hhm/CT`, `mmb #3`, `ip_reset`…) from the `runJob` event's `run_group`/`modality`/`schedule` — a deliberate, bounded Performance-Rule exception (LATERAL after ORDER BY+LIMIT, ≤50 rows, data_acquisition endpoint only, ~10ms). Additive `jobType` API field. See PHASE_LOG. |
+
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
+Phase 18 was likewise built ad-hoc from a direct user request (no prompt file);
+it shares the `phase-17-per-system-view` branch.
 
 ---
 

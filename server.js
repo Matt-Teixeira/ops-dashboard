@@ -320,7 +320,11 @@ function buildApp() {
     const status = appRunsLib.normalizeStatusFilter(req.query.status); // all | error | issues
     try {
       const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
-      const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId, status);
+      // data_acquisition is bucketed as (default) in the grid; its real per-run job
+      // type lives in verbose_log's runJob event (Phase 18). Enable the extra
+      // (bounded) verbose_log detoast for this app only -- every other app stays lean.
+      const withJobType = appName === "data_acquisition";
+      const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId, status, withJobType);
       const page = appRunsLib.shapePage(rows, limit);
       res.json({ app: appName, windowHours, status, count: page.runs.length, ...page });
     } catch (err) {

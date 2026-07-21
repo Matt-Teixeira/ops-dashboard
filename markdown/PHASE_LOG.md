@@ -8,6 +8,112 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 18 — data_acquisition Run-Log Job Type
+
+Date:
+2026-07-07 (implemented; committed 2026-07-21)
+
+Status:
+Completed
+
+Prompt:
+— (built ad-hoc from a direct user request; no prompt file, like phases 1–3)
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Self-review against `markdown/REVIEW_CHECKLIST.md`. No external handoff this phase.
+
+## Goals
+
+- Show data_acquisition's real per-run job type (the analog of `hhm_rpp_ge`/`GE_CT`) in
+  the 12h-runs dropdown, instead of the generic "run" label — derived from the run's
+  `runJob` event (`note.run_group` + `modality`/`schedule`), which is 1:1 per run.
+
+## Built
+
+- `db/queries.js`: `APP_RUNS_SQL` refactored into `buildAppRunsSql(withJobType)`; the
+  job-type variant adds a LATERAL that extracts `run_group`/`modality`/`schedule` from the
+  first `runJob` event of `verbose_log`, evaluated AFTER `ORDER BY … LIMIT` so the detoast
+  is bounded to one page. The lean path is byte-for-byte unchanged.
+- `server.js`: enables `withJobType` ONLY for `app === "data_acquisition"`.
+- `lib/app-runs.js`: `formatJobType(runGroup, modality, schedule)` → `hhm/CT`, `mmb #3`,
+  `ip_reset`…; treats the producer's JSON-string sentinels `"null"`/`"undefined"` as
+  absent. `shapePage` adds `jobType` only when derivable — other apps' payloads unchanged.
+- `public/index.html`: the dropdown sub-row job cell shows `↳ <jobType>` (falls back to
+  `↳ run`).
+- `test/app-runs.test.js`: 6 new cases (formatting, sentinel handling, jobType-only-when-
+  derivable) + the SQL-contract test now proves the lean path never mentions
+  `verbose_log` and the detoast exists only under the `withJobType` fragment.
+
+## Schema Facts Confirmed (live DB)
+
+- `verbose_log->'runJob'` events carry `note.run_group` (1:1 per run: 219/219),
+  `note.modality`, `note.schedule`; inapplicable fields are stored as the JSON **string**
+  `"null"`, not JSON null.
+- data_acquisition `verbose_log` in staging: avg ~7.5 KB, max 22 KB.
+- EXPLAIN (newest 50 in 12h): single monthly-partition Index Scan; LATERAL Function Scan
+  loops = LIMIT (50); ~10 ms total.
+
+## Important Decisions
+
+### A deliberate, bounded exception to the Performance Rule
+
+Decision: Read `verbose_log` on the request path — but only for data_acquisition's runs
+endpoint, only via a LATERAL evaluated after ORDER BY + LIMIT (≤50 rows/page), on-demand.
+
+Reason: The job type only exists inside `verbose_log` (the run has no argv). The
+alternative source (`stats.acquisition_history` manufacturer/modality) is sparse and
+multi-valued per run — it cannot yield the clean 1:1 label `run_group` does.
+
+Tradeoff: ~10 ms per expanded page in staging; the Performance Rule's target (unbounded
+detoast of large blobs) is avoided by the page cap. Re-measure if prod blobs are much
+larger.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none (same tables, same role).
+- Query / partition-pruning impact: unchanged (`inserted_at > $2` prunes; EXPLAIN-confirmed).
+- Performance impact: bounded LATERAL detoast, data_acquisition endpoint only (~10 ms/page).
+- Security impact: none; params stay bound.
+- Deployment impact: restart to load the new backend (done 2026-07-07).
+- API compatibility: additive `jobType` field, present only when derivable.
+
+## Validation
+
+Commands run:
+
+```bash
+docker exec -w /workspace ops-dashboard-app-1 node --test   # 102/102 pass
+# live: /api/apps/data_acquisition/runs?windowHours=12&limit=50
+```
+
+Results:
+
+- Passed: 102/102 unit tests; live distribution over 50 runs: hhm/CT, hhm/CV, hhm/MRI,
+  mmb #0–#7, ip_reset, offline_alert, philips, althea_env — every run labeled, no
+  `#null` artifacts.
+- Failed: none.
+
+## Review Notes
+
+Critical issues: none. First live pass showed `hhm/CT #null` — the producer stores
+`"null"` as a JSON string; fixed in `formatJobType` with sentinel handling + tests.
+
+## Follow-Up Tasks
+
+- The full run-log view (`#appruns=data_acquisition`) does not yet show the job-type
+  column the dropdown shows; the endpoint already returns it (~10-line frontend add).
+
+## Commit Readiness
+
+- Requirements implemented: yes. Read-only rules hold: yes. Partition-pruned: yes.
+- Schema assumptions confirmed live: yes. Validation recorded: yes. Ready to commit: yes.
+
+---
+
 # Phase 17 — Per-System (Equipment) Correlation View
 
 Date:

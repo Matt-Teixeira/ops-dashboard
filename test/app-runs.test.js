@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { clampInt, shapePage, normalizeStatusFilter } = require("../lib/app-runs");
+const { clampInt, shapePage, normalizeStatusFilter, formatJobType } = require("../lib/app-runs");
 
 test("clampInt: non-numeric falls back to the default", () => {
   assert.equal(clampInt(undefined, 24, 1, 720), 24);
@@ -58,6 +58,45 @@ test("shapePage: tolerates non-array input", () => {
   assert.deepEqual(shapePage(null, 10), { runs: [], nextBefore: null, nextBeforeId: null });
 });
 
+// Phase 18: data_acquisition job type.
+test("formatJobType: run_group refined by modality and schedule", () => {
+  assert.equal(formatJobType("hhm", "CT", null), "hhm/CT");
+  assert.equal(formatJobType("hhm", "MRI", null), "hhm/MRI");
+  assert.equal(formatJobType("mmb", null, "3"), "mmb #3");
+  assert.equal(formatJobType("mmb", null, 0), "mmb #0"); // schedule 0 is meaningful, not blank
+  assert.equal(formatJobType("ip_reset", null, null), "ip_reset");
+  assert.equal(formatJobType("hhm", "CT", "2"), "hhm/CT #2");
+});
+
+test("formatJobType: no run_group -> null (caller falls back)", () => {
+  assert.equal(formatJobType(null, "CT", "3"), null); // modality/schedule alone are not a job type
+  assert.equal(formatJobType("", "CT", null), null);
+  assert.equal(formatJobType("  ", null, null), null);
+  assert.equal(formatJobType(undefined, undefined, undefined), null);
+});
+
+test("formatJobType: the JSON-string sentinels 'null'/'undefined' count as absent", () => {
+  // data_acquisition writes inapplicable fields as the string "null", e.g. hhm has
+  // no schedule -> {run_group:'hhm', modality:'CV', schedule:'null'}.
+  assert.equal(formatJobType("hhm", "CV", "null"), "hhm/CV");
+  assert.equal(formatJobType("hhm", "CT", "NULL"), "hhm/CT");
+  assert.equal(formatJobType("mmb", "null", "3"), "mmb #3");
+  assert.equal(formatJobType("mmb", "undefined", "undefined"), "mmb");
+  assert.equal(formatJobType("null", "CT", "3"), null); // run_group itself absent
+});
+
+test("shapePage: includes jobType only when derivable; other apps' rows are unchanged", () => {
+  const rows = [
+    { run_id: "a", inserted_at_iso: "2026-07-07T00:00:00.000000Z", status: "SUCCESS", issue_count: 0, da_run_group: "hhm", da_modality: "CT", da_schedule: null },
+    { run_id: "b", inserted_at_iso: "2026-07-07T00:00:01.000000Z", status: "ERROR", issue_count: 2, da_run_group: null, da_modality: null, da_schedule: null },
+    { run_id: "c", inserted_at_iso: "2026-07-07T00:00:02.000000Z", status: "WARN", issue_count: 1 }, // non-DA app: no da_* columns
+  ];
+  const page = shapePage(rows, 200);
+  assert.equal(page.runs[0].jobType, "hhm/CT");
+  assert.equal("jobType" in page.runs[1], false, "no run_group -> key omitted");
+  assert.deepEqual(page.runs[2], { runId: "c", insertedAt: "2026-07-07T00:00:02.000000Z", status: "WARN", issueCount: 1 });
+});
+
 test("normalizeStatusFilter: valid values pass (case/space-insensitive), else 'all'", () => {
   assert.equal(normalizeStatusFilter("all"), "all");
   assert.equal(normalizeStatusFilter("error"), "error");
@@ -70,21 +109,28 @@ test("normalizeStatusFilter: valid values pass (case/space-insensitive), else 'a
 });
 
 // DB-free guard on the SQL shape (db/queries.js can't be required without DB env,
-// so assert the text contract instead). Protects the Phase 11/13 review invariants.
-test("APP_RUNS_SQL: partition-pruned, keyset, lean (no verbose_log), parameterized filter", () => {
+// so assert the text contract instead). Protects the Phase 11/13 review invariants
+// and the Phase 18 rule that the verbose_log detoast is gated behind withJobType.
+test("buildAppRunsSql: partition-pruned, keyset, parameterized filter; lean path never detoasts verbose_log", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "db", "queries.js"), "utf8");
-  const m = src.match(/const APP_RUNS_SQL = `([\s\S]*?)`;/);
-  assert.ok(m, "APP_RUNS_SQL template found");
+  const m = src.match(/const buildAppRunsSql = \(withJobType\) => `([\s\S]*?)`;/);
+  assert.ok(m, "buildAppRunsSql template found");
   const sql = m[1];
+  // Invariants that hold for BOTH variants.
   assert.match(sql, /app_name = \$1/, "filters app_name");
   assert.match(sql, /inserted_at > \$2::timestamptz/, "partition-prunes on inserted_at");
   assert.match(sql, /\(inserted_at, run_id\) < \(\$3::timestamptz, \$4::uuid\)/, "keyset cursor on (inserted_at, run_id)");
   assert.match(sql, /ORDER BY inserted_at DESC, run_id DESC/, "stable worst-... newest-first order");
   assert.match(sql, /LIMIT \$5/, "bounded by limit");
   assert.match(sql, /warn_error_logs/, "status/issues from warn_error_logs");
-  assert.doesNotMatch(sql, /verbose_log/, "never touches verbose_log (no detoast)");
   // Phase 13 status filter: a bound enum param ($6), never string-interpolated.
   assert.match(sql, /\$6 = 'all'/, "status filter keyed off the $6 enum param");
   assert.match(sql, /\$6 = 'error'/, "error filter");
   assert.match(sql, /\$6 = 'issues'/, "issues filter");
+  // Phase 18: verbose_log (the runJob job type) is touched ONLY inside the
+  // withJobType-guarded fragment. Strip those fragments -> the default lean SQL,
+  // which must NOT mention verbose_log (no detoast for the non-data_acquisition path).
+  const lean = sql.replace(/\$\{withJobType \? `[\s\S]*?` : ``\}/g, "");
+  assert.doesNotMatch(lean, /verbose_log/, "lean path never touches verbose_log (no detoast)");
+  assert.match(sql, /withJobType \?[\s\S]*?run_group[\s\S]*?verbose_log/, "job type is extracted from verbose_log only under withJobType");
 });

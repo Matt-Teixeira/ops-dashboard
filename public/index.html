@@ -423,7 +423,9 @@
       const tr = document.createElement("tr");
       tr.className = "subrun";
       tr.appendChild(cell(""));
-      tr.appendChild(cell("↳ run", "lead"));
+      // Job type (Phase 18): data_acquisition's per-run run_group (e.g. hhm/CT,
+      // mmb #3, ip_reset), from the runs endpoint. Falls back to "run" when absent.
+      tr.appendChild(cell("↳ " + (r.jobType || "run"), "lead"));
       const st = cell("");
       const b = document.createElement("span"); b.className = "badge " + r.status; b.textContent = r.status;
       st.appendChild(b); tr.appendChild(st);

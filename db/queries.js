@@ -133,7 +133,17 @@ FROM alert.offline_mmb_conn;
 // previous page's last row; the first page passes NULLs. inserted_at is returned as
 // a full-microsecond ISO string (inserted_at_iso) so the cursor round-trips exactly
 // (a JS Date would truncate to ms and drop rows at the boundary).
-const APP_RUNS_SQL = `
+//
+// Phase 18: data_acquisition's per-run "job type" (its run_group, e.g. hhm/CT,
+// mmb #3, ip_reset) does NOT live in warn_error_logs -- it is on the `runJob`
+// event inside verbose_log, so surfacing it costs a verbose_log detoast. That is
+// normally forbidden on this lean path (Performance Rule), so the job-type columns
+// are added ONLY in the withJobType variant, wired up ONLY for the data_acquisition
+// runs endpoint (server.js). The extraction is a LATERAL the planner evaluates
+// AFTER ORDER BY + LIMIT (EXPLAIN: `Function Scan` loops = LIMIT, single monthly
+// partition Index Scan, ~10ms for 50 rows), so the detoast is bounded to ONE page,
+// on demand. run_group is 1:1 per run; the label is formatted in lib/app-runs.js.
+const buildAppRunsSql = (withJobType) => `
 SELECT
   run_id,
   to_char(inserted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS inserted_at_iso,
@@ -142,8 +152,19 @@ SELECT
     WHEN EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'WARN')  THEN 'WARN'
     ELSE 'SUCCESS'
   END AS status,
-  json_array_length(COALESCE(warn_error_logs, '[]'::json)) AS issue_count
-FROM util.app_run_logs
+  json_array_length(COALESCE(warn_error_logs, '[]'::json)) AS issue_count${withJobType ? `,
+  rj.run_group AS da_run_group,
+  rj.modality  AS da_modality,
+  rj.schedule  AS da_schedule` : ``}
+FROM util.app_run_logs${withJobType ? `
+LEFT JOIN LATERAL (
+  SELECT e->'note'->>'run_group' AS run_group,
+         e->'note'->>'modality'  AS modality,
+         e->'note'->>'schedule'  AS schedule
+  FROM json_array_elements(COALESCE(verbose_log, '[]'::json)) e
+  WHERE e->>'func' = 'runJob'
+  LIMIT 1
+) rj ON true` : ``}
 WHERE app_name = $1
   AND inserted_at > $2::timestamptz
   AND ($3::timestamptz IS NULL OR (inserted_at, run_id) < ($3::timestamptz, $4::uuid))
@@ -157,6 +178,8 @@ WHERE app_name = $1
 ORDER BY inserted_at DESC, run_id DESC
 LIMIT $5;
 `;
+const APP_RUNS_SQL = buildAppRunsSql(false);
+const APP_RUNS_JOBTYPE_SQL = buildAppRunsSql(true);
 
 function jobsLatestSince(sinceIso) {
   return db.any(JOBS_LATEST_SQL, [sinceIso]);
@@ -289,8 +312,11 @@ function systemDetail(systemId, sinceIso) {
   return db.any(SYSTEM_DETAIL_SQL, [systemId, sinceIso]);
 }
 
-function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, statusFilter = "all") {
-  return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
+// withJobType adds the data_acquisition run_group columns (one bounded verbose_log
+// detoast per page); see buildAppRunsSql. Callers enable it only for that app.
+function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, statusFilter = "all", withJobType = false) {
+  const sql = withJobType ? APP_RUNS_JOBTYPE_SQL : APP_RUNS_SQL;
+  return db.any(sql, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
 }
 
 function recentErrors(lookbackDays = 2, limit = 100) {
