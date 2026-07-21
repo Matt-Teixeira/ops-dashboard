@@ -60,11 +60,33 @@
     .chip.active { opacity: 1; box-shadow: 0 0 0 2px #fff6; }
     #updated { font-variant-numeric: tabular-nums; }
     .controls label { display: inline-flex; align-items: center; gap: .3rem; }
+    /* Incidents view (Phase 19): severity/state badges, provenance, tiles. */
+    .sev-critical, .sev-high { background: #c62828; }
+    .sev-medium { background: #ed6c02; }
+    .sev-low { background: #607d8b; }
+    .sev-info { background: #9e9e9e; }
+    .st-open { background: #c62828; }
+    .st-recurring { background: #6a1b9a; }
+    .st-resolved { background: #2e7d32; }
+    .st-acknowledged { background: #1565c0; }
+    .st-suppressed { background: #9e9e9e; }
+    /* An oracle-provenance category is a hint about the equipment's recent past, NOT a
+       diagnosis of this incident -- render it visibly weaker (dashed, muted, help cursor). */
+    .badge.cat-oracle { background: transparent; color: #888; border: 1px dashed #8886; font-weight: 400; cursor: help; }
+    .tiles { display: flex; gap: .6rem; flex-wrap: wrap; margin: .6rem 0; }
+    .tile { border: 1px solid #8883; border-radius: .5rem; padding: .35rem .8rem; min-width: 5.2rem; background: none; text-align: left; font: inherit; }
+    .tile b { display: block; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+    .tile .muted { font-size: .72rem; }
+    button.tile { cursor: pointer; }
+    button.tile[aria-pressed="true"] { box-shadow: 0 0 0 2px #fff6; }
+    .reasons { margin: .3rem 0 .6rem 1.1rem; padding: 0; font-size: .85rem; }
+    .reasons li { margin: .15rem 0; }
+    .action-note { border-left: 3px solid #2e7d32; padding: .3rem .6rem; margin: .6rem 0; font-size: .88rem; background: #2e7d3212; }
   </style>
 </head>
 <body>
   <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
-  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a> &middot; <a href="#systems">systems</a></div>
+  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a> &middot; <a href="#systems">systems</a> &middot; <a href="#incidents">incidents</a></div>
 
   <!-- Dashboard view: job grid + error feed. Hidden while a run drill-down is open. -->
   <div id="dashboard">
@@ -117,6 +139,12 @@
 
   <!-- Per-system detail: one system's cross-app breakdown. Populated by showSystem(). -->
   <section id="system-view" hidden></section>
+
+  <!-- Incidents list (Phase 19): incident-engine's classified rollup. Populated by showIncidents(). -->
+  <section id="incidents-view" hidden></section>
+
+  <!-- Incident detail: one incident's assessment + raw events. Populated by showIncident(). -->
+  <section id="incident-view" hidden></section>
 
   <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
   <script src="grid-view.js"></script>
@@ -756,9 +784,9 @@
     let runReq = 0;
 
     // Every routed view lives in its own <section>; hide them all before showing one, so
-    // a newly added view can never strand a stale sibling (7 views as of Phase 17).
+    // a newly added view can never strand a stale sibling (9 views as of Phase 19).
     function hideAllViews() {
-      for (const id of ["dashboard", "run-view", "connectivity-view", "appruns-view", "acq-view", "systems-view", "system-view"]) {
+      for (const id of ["dashboard", "run-view", "connectivity-view", "appruns-view", "acq-view", "systems-view", "system-view", "incidents-view", "incident-view"]) {
         const el = document.getElementById(id);
         if (el) el.hidden = true;
       }
@@ -1284,6 +1312,312 @@
       renderSystem(view, data);
     }
 
+    // --- incidents views (Phase 19) ------------------------------------------
+    // Read-only window onto incident-engine's `incidents` schema: the raw error
+    // firehose collapsed to one row per distinct problem x affected equipment,
+    // classified and severity-assessed upstream. The tile row doubles as the filter
+    // UI and as a self-check (tile counts come from the same response's GROUP BY).
+    //
+    // Provenance rule (from the producer's integration brief): when categorySource
+    // is 'oracle', the category is a corroborated hint about the equipment's recent
+    // past -- NOT a diagnosis of this incident -- so it renders as a dashed, muted
+    // badge with an explanatory tooltip, never as a plain diagnosed category.
+
+    let incFilters = { severity: "all", state: "all" };
+
+    const ORACLE_TIP = "corroborated from the equipment's recent history (oracle) — not a diagnosis of this incident";
+
+    function sevBadge(sev) {
+      const b = document.createElement("span");
+      b.className = "badge sev-" + sev;
+      b.textContent = sev;
+      return b;
+    }
+
+    function stateBadge(st) {
+      const b = document.createElement("span");
+      b.className = "badge st-" + st;
+      b.textContent = st;
+      return b;
+    }
+
+    function categoryCell(category, categorySource) {
+      const td = document.createElement("td");
+      td.textContent = category;
+      if (categorySource === "oracle") {
+        td.appendChild(document.createTextNode(" "));
+        const b = document.createElement("span");
+        b.className = "badge cat-oracle";
+        b.textContent = "oracle";
+        b.title = ORACLE_TIP;
+        td.appendChild(b);
+      }
+      return td;
+    }
+
+    // Entities are usually equipment ids (SME…) that have a cross-app system view;
+    // __global__ (unattributable events) and anything else render as plain text.
+    function entityCell(entity) {
+      if (entity && /^SME/i.test(entity)) return systemCell(entity);
+      return cell(entity === "__global__" ? "(global)" : entity || "—");
+    }
+
+    function tile(label, n, cls, active, onClick) {
+      const el = document.createElement(onClick ? "button" : "div");
+      el.className = "tile";
+      if (onClick) { el.setAttribute("aria-pressed", String(!!active)); el.addEventListener("click", onClick); }
+      const b = document.createElement("b");
+      b.textContent = n;
+      if (cls) { const dot = document.createElement("span"); dot.className = "badge " + cls; dot.textContent = label; el.appendChild(b); el.appendChild(dot); }
+      else { const l = document.createElement("span"); l.className = "muted"; el.appendChild(b); l.textContent = label; el.appendChild(l); }
+      return el;
+    }
+
+    function renderIncidents(view, data) {
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const incidents = Array.isArray(data.incidents) ? data.incidents : [];
+      const roll = data.rollup || { total: 0, bySeverity: {}, byState: {} };
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "Incidents";
+      view.appendChild(h2);
+
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      const filtering = incFilters.severity !== "all" || incFilters.state !== "all";
+      sub.textContent = `· ${roll.total} incidents` + (filtering ? ` · showing ${incidents.length}` : "") +
+        ` · from incident-engine · as of ${fmtTime(data.asOf)}`;
+      view.appendChild(sub);
+
+      // Tile row = rollup + filters. Clicking a tile toggles that filter and refetches.
+      const tiles = document.createElement("div");
+      tiles.className = "tiles";
+      const sevOrder = ["critical", "high", "medium", "low", "info"];
+      for (const s of sevOrder) {
+        const n = (roll.bySeverity && roll.bySeverity[s]) || 0;
+        if (!n && s === "critical") continue; // reserved by the engine, unused today
+        tiles.appendChild(tile(s, n, "sev-" + s, incFilters.severity === s, () => {
+          incFilters.severity = incFilters.severity === s ? "all" : s;
+          showIncidents();
+        }));
+      }
+      for (const s of ["open", "recurring", "resolved"]) {
+        const n = (roll.byState && roll.byState[s]) || 0;
+        tiles.appendChild(tile(s, n, "st-" + s, incFilters.state === s, () => {
+          incFilters.state = incFilters.state === s ? "all" : s;
+          showIncidents();
+        }));
+      }
+      view.appendChild(tiles);
+
+      if (!incidents.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = filtering ? "No incidents match the active filters." : "No incidents.";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["Severity", "State", "Category", "Entity", "Last seen", "Count", ""]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const i of incidents) {
+        const tr = document.createElement("tr");
+        if (i.state !== "resolved" && (i.severity === "high" || i.severity === "critical")) tr.className = "row-ERROR";
+        else if (i.state !== "resolved" && i.severity === "medium") tr.className = "row-WARN";
+        const sv = cell(""); sv.appendChild(sevBadge(i.severity)); tr.appendChild(sv);
+        const st = cell(""); st.appendChild(stateBadge(i.state)); tr.appendChild(st);
+        tr.appendChild(categoryCell(i.category, i.categorySource));
+        tr.appendChild(entityCell(i.entity));
+        tr.appendChild(cell(fmtTime(i.lastSeen)));
+        tr.appendChild(cell(i.occurrenceCount, "num"));
+        const td = document.createElement("td");
+        const a = document.createElement("a");
+        a.href = "#incident=" + encodeURIComponent(i.id);
+        a.textContent = "view ›";
+        td.appendChild(a); tr.appendChild(td);
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+    }
+
+    async function showIncidents() {
+      const myReq = ++runReq;
+      hideAllViews();
+      const view = document.getElementById("incidents-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      connMessage(view, "Loading incidents…");
+      const p = new URLSearchParams();
+      if (incFilters.severity !== "all") p.set("severity", incFilters.severity);
+      if (incFilters.state !== "all") p.set("state", incFilters.state);
+      const qs = p.toString();
+      let res;
+      try { res = await fetch("/api/incidents" + (qs ? "?" + qs : "")); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load incidents."); return; }
+      if (myReq !== runReq) return;
+      if (!res.ok) return connMessage(view, "Couldn't load incidents.");
+      let data;
+      try { data = await res.json(); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load incidents."); return; }
+      if (myReq !== runReq) return;
+      renderIncidents(view, data);
+    }
+
+    function renderIncident(view, data) {
+      view.replaceChildren();
+      const back = document.createElement("a");
+      back.href = "#incidents"; back.textContent = "← incidents"; back.className = "muted";
+      view.appendChild(back);
+      const i = data.incident || {};
+      const events = Array.isArray(data.events) ? data.events : [];
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = `Incident #${i.id} — ${i.category}`;
+      view.appendChild(h2);
+
+      const badges = document.createElement("div");
+      badges.appendChild(sevBadge(i.severity));
+      badges.appendChild(document.createTextNode(" "));
+      badges.appendChild(stateBadge(i.state));
+      if (i.categorySource === "oracle") {
+        badges.appendChild(document.createTextNode(" "));
+        const b = document.createElement("span");
+        b.className = "badge cat-oracle"; b.textContent = "oracle category"; b.title = ORACLE_TIP;
+        badges.appendChild(b);
+      }
+      view.appendChild(badges);
+
+      const meta = document.createElement("dl");
+      meta.className = "run-meta";
+      const dd = (label, value, node) => {
+        const dt = document.createElement("dt"); dt.textContent = label;
+        const el = document.createElement("dd");
+        if (node) el.appendChild(node); else el.textContent = value;
+        meta.appendChild(dt); meta.appendChild(el);
+      };
+      dd("entity", null, (() => { const c = entityCell(i.entity); const s = document.createElement("span"); s.append(...c.childNodes); return s; })());
+      dd("occurrences", String(i.occurrenceCount));
+      dd("first seen", fmtTime(i.firstSeen));
+      dd("last seen", fmtTime(i.lastSeen));
+      if (i.func) dd("func", i.func);
+      if (i.apps && i.apps.length) dd("app", i.apps.join(", "));
+      dd("confidence", i.confidence == null ? "—" : i.confidence.toFixed(2) + ` (${i.assessorKind || "rules"})`);
+      if (i.resolvedAt) dd("resolved", `${fmtTime(i.resolvedAt)} (${i.resolvedReason || "?"})`);
+      view.appendChild(meta);
+
+      const reasons = (i.assessment && i.assessment.reasons) || [];
+      if (reasons.length) {
+        const h3 = document.createElement("div");
+        h3.className = "muted"; h3.textContent = "assessment";
+        view.appendChild(h3);
+        const ul = document.createElement("ul");
+        ul.className = "reasons";
+        for (const r of reasons) { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); }
+        view.appendChild(ul);
+      }
+      if (i.assessment && i.assessment.recommendedAction) {
+        const p = document.createElement("div");
+        p.className = "action-note";
+        p.textContent = "Recommended: " + i.assessment.recommendedAction;
+        view.appendChild(p);
+      }
+
+      if (i.sampleMessage) {
+        const pre = document.createElement("div");
+        pre.className = "err-msg";
+        pre.textContent = i.sampleMessage;
+        view.appendChild(pre);
+      }
+
+      const evHead = document.createElement("h2");
+      evHead.style.fontSize = ".9rem";
+      evHead.style.margin = "1rem 0 .2rem";
+      evHead.textContent = `Events (${events.length}${events.length >= data.eventLimit ? ", newest " + data.eventLimit : ""})`;
+      view.appendChild(evHead);
+
+      if (!events.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No events retained for this incident (source rows may have aged out).";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["When", "App", "Type", "Func", "Category", "Message", "Run"]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const e of events) {
+        const tr = document.createElement("tr");
+        if (e.type === "ERROR" || e.type === "WARN") tr.className = "row-" + e.type;
+        tr.appendChild(cell(fmtTime(e.dt)));
+        tr.appendChild(cell(e.app));
+        const ty = cell("");
+        const badge = document.createElement("span");
+        badge.className = "badge " + (TYPE_CLASS[e.type] || "INFO");
+        badge.textContent = e.type;
+        ty.appendChild(badge); tr.appendChild(ty);
+        tr.appendChild(cell(e.func || "—"));
+        tr.appendChild(cell(e.category));
+        const msg = document.createElement("td");
+        msg.className = "detail";
+        msg.textContent = e.message || "—";
+        tr.appendChild(msg);
+        const runTd = document.createElement("td");
+        if (e.runId) {
+          const a = document.createElement("a");
+          a.href = runHref(e.runId, e.insertedAt);
+          a.textContent = "view ›";
+          runTd.appendChild(a);
+        } else { runTd.textContent = "—"; }
+        tr.appendChild(runTd);
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+    }
+
+    async function showIncident(id) {
+      const myReq = ++runReq;
+      hideAllViews();
+      const view = document.getElementById("incident-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      connMessage(view, "Loading incident…");
+      let res;
+      try { res = await fetch("/api/incidents/" + encodeURIComponent(id)); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load this incident."); return; }
+      if (myReq !== runReq) return;
+      if (res.status === 400) return connMessage(view, "Invalid incident id.");
+      if (res.status === 404) return connMessage(view, "Incident not found.");
+      if (!res.ok) return connMessage(view, "Couldn't load this incident.");
+      let data;
+      try { data = await res.json(); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load this incident."); return; }
+      if (myReq !== runReq) return;
+      renderIncident(view, data);
+    }
+
     function route() {
       const hash = location.hash.slice(1);
       if (hash.startsWith("run=")) {
@@ -1297,6 +1631,10 @@
         showSystems();
       } else if (hash.startsWith("system=")) {
         showSystem(decodeURIComponent(hash.slice("system=".length)));
+      } else if (hash === "incidents") {
+        showIncidents();
+      } else if (hash.startsWith("incident=")) {
+        showIncident(decodeURIComponent(hash.slice("incident=".length)));
       } else if (hash.startsWith("appruns=")) {
         showAppRuns(decodeURIComponent(hash.slice("appruns=".length)));
       } else {

@@ -319,6 +319,92 @@ function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, st
   return db.any(sql, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
 }
 
+// ---------------------------------------------------------------------------
+// Incidents view (Phase 19): read-only over the `incidents` schema, which is
+// OWNED and written by incident-engine (a separate app). The read contract is
+// /opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md +
+// /opt/apps/incident-engine/docs/incidents-schema.md. This dashboard only ever
+// SELECTs here (grant: setup-readonly-role.sql, fail-closed).
+//
+// All served on the REQUEST PATH (house precedent, cf. connectivity): the rollup
+// table is small (~530 rows), indexed (severity/state + last_seen DESC), and has
+// no json blob to detoast (`assessment` is small jsonb; verbose_log is nowhere
+// near this schema). The drill-down over error_events (~360k rows) is bounded by
+// the (fingerprint, dt DESC) index + LIMIT.
+
+// Severity/state tile rollup. Doubles as the UI's self-check: the tile numbers
+// must equal this GROUP BY at the same moment.
+const INCIDENTS_ROLLUP_SQL = `
+SELECT severity, state, count(*)::int AS n
+FROM incidents.incidents
+GROUP BY severity, state;
+`;
+
+// Filterable list, worst-first. $1..$3 are normalized filters ('all' or a bound
+// value -- never interpolated; the route validates shape first). Severity has no
+// natural sort order as text, so rank it explicitly; 'critical' is reserved by
+// the engine (unused today) but ranked so it would surface first if it appears.
+const INCIDENTS_LIST_SQL = `
+SELECT
+  id, fingerprint, entity, occurrence_count, first_seen, last_seen,
+  apps, systems, sample_run_id, sample_message,
+  category, category_source, error_type, phase, func, type,
+  severity, confidence, assessor_kind, assessment,
+  state, resolved_at, resolved_reason
+FROM incidents.incidents
+WHERE ($1 = 'all' OR severity = $1)
+  AND ($2 = 'all' OR state = $2)
+  AND ($3 = 'all' OR category = $3)
+ORDER BY
+  CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+                WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END,
+  last_seen DESC
+LIMIT $4;
+`;
+
+// One incident by id (route validates the integer shape before it gets here).
+const INCIDENT_DETAIL_SQL = `
+SELECT
+  id, fingerprint, entity, occurrence_count, first_seen, last_seen,
+  apps, systems, sample_run_id, sample_message,
+  category, category_source, error_type, phase, func, type,
+  severity, confidence, assessor_kind, assessor_version, assessment,
+  state, resolved_at, resolved_reason
+FROM incidents.incidents
+WHERE id = $1::bigint;
+`;
+
+// Drill-down: the raw L0 events behind one incident, newest first. Keyed by the
+// incident's (fingerprint, entity) -- the engine stamps `entity` on every event
+// row precisely so consumers never re-derive it. Uses idx_error_events_fingerprint_dt;
+// LIMIT bounds the payload. raw_event/err_msg stay small; no verbose_log anywhere.
+const INCIDENT_EVENTS_SQL = `
+SELECT
+  run_id, event_ord, src_app_name, type, func, tag,
+  err_msg, note_message, sme, system_id,
+  error_category, error_type, dt, inserted_at
+FROM incidents.error_events
+WHERE fingerprint = $1 AND entity = $2
+ORDER BY dt DESC NULLS LAST
+LIMIT $3;
+`;
+
+function incidentsRollup() {
+  return db.any(INCIDENTS_ROLLUP_SQL);
+}
+
+function incidentsList(severity = "all", state = "all", category = "all", limit = 1000) {
+  return db.any(INCIDENTS_LIST_SQL, [severity, state, category, limit]);
+}
+
+function incidentById(id) {
+  return db.oneOrNone(INCIDENT_DETAIL_SQL, [id]);
+}
+
+function incidentEvents(fingerprint, entity, limit = 100) {
+  return db.any(INCIDENT_EVENTS_SQL, [fingerprint, entity, limit]);
+}
+
 function recentErrors(lookbackDays = 2, limit = 100) {
   return db.any(ERRORS_SQL, [lookbackDays, limit]);
 }
@@ -334,4 +420,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, incidentsRollup, incidentsList, incidentById, incidentEvents, ping };

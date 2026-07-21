@@ -16,6 +16,11 @@ log table `util.app_run_logs` and renders:
 - a **connectivity panel** — latest per-equipment connectivity state (which
   systems are offline) from the `alert.*` tables, surfacing per-system detail the
   `data_acquisition/(default)` job bucket hides
+- an **incidents view** (Phase 19) — incident-engine's classified, severity-assessed
+  rollup of the error firehose (one row per distinct problem × equipment), read from
+  the `incidents` schema that the separate writer app `/opt/apps/incident-engine`
+  owns; this dashboard only ever SELECTs it. An `oracle`-provenance category is
+  rendered as a hint (equipment's recent history), never as a diagnosis.
 
 It does not orchestrate, ingest, or mutate anything in the pipeline.
 
@@ -75,10 +80,15 @@ path.
 The dashboard connects as a dedicated read-only role (`ops_dashboard_ro`). Its
 grants are `CONNECT`, `USAGE ON SCHEMA util`, `SELECT ON util.app_run_logs`; — added
 in Phase 10, the first read outside `util` — `USAGE ON SCHEMA alert` + `SELECT` on
-exactly `alert.offline_hhm_conn` / `alert.offline_mmb_conn`; and — added in Phase 15,
+exactly `alert.offline_hhm_conn` / `alert.offline_mmb_conn`; — added in Phase 15,
 the third read surface — `USAGE ON SCHEMA stats` + `SELECT` on exactly
-`stats.acquisition_history`. Nothing else: no other object in any schema, no writes,
-no DDL. Each non-`util` grant is applied **fail-closed** (the setup script REVOKEs the
+`stats.acquisition_history`; and — added in Phase 19, the fourth read surface —
+`USAGE ON SCHEMA incidents` + `SELECT` on exactly `incidents.incidents` /
+`incidents.error_events` (the engine's `pipeline_state` watermark table is
+deliberately not granted). Nothing else: no other object in any schema, no writes,
+no DDL. The incidents grant lives in THIS repo's `setup-readonly-role.sql` — never in
+incident-engine — so the script stays the single fail-closed allowlist of everything
+this role can touch. Each non-`util` grant is applied **fail-closed** (the setup script REVOKEs the
 role's schema/table privileges, re-grants only the intended SELECTs, then a `DO` block
 RAISEs if any other effective privilege — incl. via PUBLIC/membership — or schema
 CREATE remains), so re-running the script *proves* the surface rather than just adding

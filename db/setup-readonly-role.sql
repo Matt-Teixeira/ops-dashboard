@@ -6,9 +6,10 @@
 --
 -- The dashboard is read-only, so its credential should be too. This role can
 -- ONLY connect and SELECT from util.app_run_logs, the two alert.* connectivity
--- tables, and stats.acquisition_history -- no writes, no DDL, no other tables. Reads
--- of util.app_run_logs go through the partitioned parent, so a single SELECT grant on
--- the parent also covers existing and future monthly partitions.
+-- tables, stats.acquisition_history, and the two incidents.* tables -- no writes,
+-- no DDL, no other tables. Reads of util.app_run_logs go through the partitioned
+-- parent, so a single SELECT grant on the parent also covers existing and future
+-- monthly partitions.
 --
 -- Phase 10 added the first read OUTSIDE schema util: the connectivity panel selects
 -- the latest per-system state from alert.offline_hhm_conn / alert.offline_mmb_conn
@@ -111,10 +112,47 @@ BEGIN
   END IF;
 END $$;
 
+-- Incidents view (Phase 19): the fourth read outside schema util. SELECT-only on
+-- exactly incidents.incidents (the rollup the view lists) and incidents.error_events
+-- (the per-incident drill-down). The schema is OWNED and written by incident-engine
+-- (a separate app); this grant lives HERE, not there, so this script stays the single
+-- fail-closed allowlist of everything ops_dashboard_ro can touch (see the integration
+-- brief in /opt/apps/incident-engine/notes/). incidents.pipeline_state (the engine's
+-- watermark table) is deliberately NOT granted. Same fail-closed pattern as above.
+REVOKE ALL ON ALL TABLES IN SCHEMA incidents FROM ops_dashboard_ro;
+REVOKE ALL ON SCHEMA incidents               FROM ops_dashboard_ro;
+
+GRANT USAGE   ON SCHEMA incidents            TO ops_dashboard_ro;
+GRANT SELECT  ON incidents.incidents         TO ops_dashboard_ro;
+GRANT SELECT  ON incidents.error_events      TO ops_dashboard_ro;
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  SELECT string_agg(n.nspname || '.' || c.relname || ':' || priv, ', ' ORDER BY c.relname, priv)
+    INTO bad
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) AS priv
+  WHERE n.nspname = 'incidents'
+    AND c.relkind IN ('r','p','v','m','f')
+    AND has_table_privilege('ops_dashboard_ro', c.oid, priv)
+    AND NOT (c.relname IN ('incidents','error_events') AND priv = 'SELECT');
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'ops_dashboard_ro has unexpected privileges in schema incidents: %', bad;
+  END IF;
+  IF has_schema_privilege('ops_dashboard_ro', 'incidents', 'CREATE') THEN
+    RAISE EXCEPTION 'ops_dashboard_ro unexpectedly has CREATE on schema incidents';
+  END IF;
+END $$;
+
 -- Sanity: this role must NOT be able to write. (Expected: permission denied.)
 --   SET ROLE ops_dashboard_ro;
 --   INSERT INTO util.app_run_logs(app_name, run_id) VALUES ('x', gen_random_uuid());
--- Sanity: the connectivity reads should now succeed. (Expected: a row count.)
+--   INSERT INTO incidents.incidents(fingerprint, entity, category_source) VALUES ('x','y','classifier');
+-- Sanity: the connectivity + incidents reads should now succeed. (Expected: row counts.)
 --   SET ROLE ops_dashboard_ro;
 --   SELECT count(*) FROM alert.offline_hhm_conn;
 --   SELECT count(*) FROM alert.offline_mmb_conn;
+--   SELECT count(*) FROM incidents.incidents;

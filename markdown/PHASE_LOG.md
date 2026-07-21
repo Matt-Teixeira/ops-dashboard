@@ -8,6 +8,145 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 19 — Incidents View
+
+Date:
+2026-07-21
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_19_incidents_view.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_19.md`
+- Producer contract: `/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md`
+
+## Goals
+
+- Surface incident-engine's `incidents` schema (the classified, severity-assessed,
+  self-resolving rollup of the suite's error firehose) as a read-only operator view:
+  severity/state tiles, filterable list, per-incident detail (assessment reasons +
+  recommended action) and raw-event drill-down. Zero incident-engine changes.
+
+## Built
+
+- `db/setup-readonly-role.sql`: fourth read surface — `USAGE ON SCHEMA incidents` +
+  `SELECT` on exactly `incidents.incidents` / `incidents.error_events`, fail-closed
+  (REVOKE → GRANT → DO-verify); `pipeline_state` deliberately not granted. Applied live.
+- `db/queries.js`: `INCIDENTS_ROLLUP_SQL` (severity×state GROUP BY — also the UI
+  self-check), `INCIDENTS_LIST_SQL` (bound 'all'-or-value filters, explicit severity
+  rank, `last_seen DESC`), `INCIDENT_DETAIL_SQL` (bigint id), `INCIDENT_EVENTS_SQL`
+  (by the incident's `(fingerprint, entity)`, `dt DESC`, LIMIT-bounded). Request-path,
+  uncached (house precedent: small, indexed, no json-blob detoast).
+- `lib/incidents.js` + `test/incidents.test.js` (10 tests): pure shaping (defensive
+  `assessment` jsonb parse, rollup with all keys, camelCase rows), shape-gated filter
+  normalizers, and a SQL text-contract test (bound params, read-only, no verbose_log).
+- `server.js`: `GET /api/incidents` (rollup + filtered list in one response),
+  `GET /api/incidents/:id` (integer-validated → detail + events).
+- `public/index.html`: `#incidents` (tile row = rollup AND filter UI; list with
+  severity/state badges, category+provenance, entity→`#system=` links) and
+  `#incident=<id>` (badges, meta grid, assessment reasons, recommended-action callout,
+  sample message, raw-event table with run drill-down links); nav link, hideAllViews,
+  route branches. **Provenance rule enforced everywhere a category renders:**
+  `category_source='oracle'` gets a dashed muted "oracle" badge + tooltip — a hint about
+  the equipment's recent past, never a diagnosis.
+
+## Schema Facts Confirmed (live DB)
+
+- `incidents.incidents` (29 cols incl. `category_source`, `type`, `assessor_version`,
+  internal `resolved_last_seen`) and `incidents.error_events` (20 cols incl. stamped
+  `entity`) — column lists pulled live; match the producer's brief.
+- Indexes: `uq_incidents_fingerprint_entity`, `(severity, last_seen DESC)`,
+  `(state, last_seen DESC)`, BRIN(last_seen); `error_events` `(fingerprint, dt DESC)`,
+  PK `(run_id, event_ord)`.
+- Live at build time: 528 incidents (high 209 / medium 269 / info 50; open 361 /
+  recurring 30 / resolved 137), 360,195 error_events — matches the brief's snapshot
+  modulo documented drift.
+
+## Important Decisions
+
+### Grant lives in this repo (single allowlist)
+
+Decision: The incidents grant is a block in `db/setup-readonly-role.sql`, not a script in
+incident-engine.
+
+Reason: Per the producer's brief — ops-dashboard owns its role's read surface; one script
+stays the complete, fail-closed, provable allowlist (two scripts could fight).
+
+Tradeoff: Cross-repo coupling documented in both repos' docs.
+
+### Oracle provenance is a first-class UI rule
+
+Decision: `category_source` travels DB→API→DOM untouched, and every category rendering
+branches on it (dashed muted badge + tooltip when `oracle`).
+
+Reason: The producer flagged this as the one place a naive view actively misleads: an
+oracle category is the equipment's latest *unrelated* classified error, stamped onto an
+`unknown` incident (live-verified: incident 17190 says `rsync_io_timeout`/oracle while
+its own events read "No new monitoring data found."/unknown).
+
+Tradeoff: One extra field everywhere; worth it — trust in the view depends on it.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: fourth read surface, fail-closed-verified; INSERT
+  and `pipeline_state` SELECT proven denied as `ops_dashboard_ro`.
+- Query / partition-pruning impact: `incidents.*` is not partitioned (engine's DDL);
+  list is a 528-row indexed sort (~1.4ms), drill-down is index-driven + LIMIT.
+- Performance impact: request-path; list ~1.4ms; worst-case drill-down (25k-event
+  incident) ~95ms via bitmap on `(fingerprint, dt DESC)` — within the sub-second budget.
+- Security impact: filters shape-normalized ('all' fallback), `:id` regex-gated before
+  the `::bigint` cast; params always bound; sanitized 500s.
+- Deployment impact: two-step — apply the incidents grant (superuser) + restart, else
+  the endpoints 500 (permission denied). Done live this phase.
+- API compatibility: additive endpoints only; existing responses unchanged.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test    # 112/112 pass
+# boundary: SET ROLE ops_dashboard_ro -> SELECT ok / INSERT denied / pipeline_state denied
+# live: /api/incidents (+filters, bad input), /api/incidents/17190, EXPLAIN both queries
+```
+
+Results:
+
+- Passed: 112/112 unit tests; tile rollup exactly equals a hand-run severity×state
+  GROUP BY at the same moment (209/269/50 · 361/30/137); `?state=recurring` → 30 rows,
+  all recurring; `severity=DROP TABLE` normalizes to `all`; `/api/incidents/abc` → 400;
+  oracle incident 17190 carries `categorySource:"oracle"` with 5 assessment reasons +
+  recommended action + 100 events with working run links; existing views unchanged.
+- Failed: none.
+
+## Review Notes
+
+Critical issues: none. One test regex fixed during development (`inserted_at` matched
+`/INSERT/` — now word-bounded).
+
+## Follow-Up Tasks
+
+- Drill-down on very chatty incidents (25k events for one fingerprint×entity) does a
+  25k-row bitmap+sort (~95ms). If it grows, propose a `(fingerprint, entity, dt DESC)`
+  index to incident-engine (schema owner) — not actionable from this repo.
+- Onboarding suite-health overview + legend (old Phase 19 idea) remains open roadmap.
+
+## Commit Readiness
+
+- Requirements implemented: yes. Read-only / least-privilege rules hold: yes
+  (fail-closed-proven). Time-windowed queries partition-pruned: N/A (incidents is not
+  partitioned; bounded + indexed instead). Schema assumptions confirmed live: yes.
+- Validation recorded: yes. Ready to commit: yes.
+
+---
+
 # Phase 18 — data_acquisition Run-Log Job Type
 
 Date:

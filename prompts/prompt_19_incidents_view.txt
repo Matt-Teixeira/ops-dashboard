@@ -1,0 +1,73 @@
+Phase 19 - Incidents View (consume incident-engine's `incidents` schema)
+
+Phase goal:
+Give the operator a read-only Incidents view -- the raw error firehose collapsed to one
+row per distinct problem x affected equipment, classified and severity-assessed by
+incident-engine -- with tiles, a filterable list, and a per-incident detail + raw-event
+drill-down. incident-engine needs ZERO changes.
+
+Authoritative input:
+/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md (the producer's read
+contract + kickoff) and /opt/apps/incident-engine/docs/incidents-schema.md (column
+semantics -- several are subtle).
+
+Implementation scope:
+- db/setup-readonly-role.sql: fourth read surface -- USAGE ON SCHEMA incidents + SELECT
+  on exactly incidents.incidents and incidents.error_events, fail-closed (REVOKE ->
+  GRANT -> DO-verify), pipeline_state deliberately NOT granted. Grant lives HERE (the
+  single allowlist), never in incident-engine. Apply as superuser BEFORE the code needs it.
+- db/queries.js: INCIDENTS_ROLLUP_SQL (severity x state GROUP BY), INCIDENTS_LIST_SQL
+  (bound 'all'-or-value filters, explicit severity rank, last_seen DESC), INCIDENT_DETAIL_SQL
+  (by bigint id), INCIDENT_EVENTS_SQL (by the incident's (fingerprint, entity), dt DESC,
+  LIMIT-bounded). All request-path (small/indexed, no json blob detoast), NOT cached.
+- lib/incidents.js + test/incidents.test.js: pure shaping (camelCase, defensive
+  assessment-jsonb parse, rollup with all keys present), filter normalizers (shape-gated),
+  and the SQL text-contract test (no verbose_log, bound params, read-only).
+- server.js: GET /api/incidents (rollup + filtered list in one response) and
+  GET /api/incidents/:id (integer-validated; detail + events). Sanitized 500s.
+- public/index.html: #incidents (tile row = rollup AND filter UI; list with severity/state
+  badges, category + provenance, entity linking to #system=, count, view link) and
+  #incident=<id> (assessment reasons, recommendedAction, sample message, meta, raw events
+  with run drill-down links). Nav link, hideAllViews entries, route() branches.
+- THE provenance rule (from the brief): category_source='oracle' means the category is a
+  corroborated hint about the equipment's recent past, NOT a diagnosis of this incident.
+  The UI must render it visibly differently (dashed muted badge + tooltip) at every place
+  a category appears. Never drop category_source between DB and DOM.
+
+Explicit non-goals:
+- No writes anywhere (acknowledged/suppressed transitions are the engine's future human
+  layer, not this dashboard's -- it stays read-only).
+- No incident-engine changes; no reading incidents.pipeline_state.
+- No notifications, no auth, no caching layer.
+- The old roadmap Phases 18 (error-category trends) and 20 (insights feed) are superseded
+  by incident-engine, which classifies/assesses upstream -- mark them, don't build them.
+
+Expected files / layers:
+- db/setup-readonly-role.sql, db/queries.js, lib/incidents.js, server.js,
+  public/index.html, test/incidents.test.js, markdown/* updates.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Boundary: SET ROLE ops_dashboard_ro -> SELECT count(*) FROM incidents.incidents (works);
+  INSERT (permission denied); SELECT FROM incidents.pipeline_state (permission denied).
+- Live smoke: /api/incidents tiles == a hand-run severity x state GROUP BY at the same
+  moment (drift-tolerant); ?state=recurring returns only recurring; an oracle-provenance
+  incident renders the badge; /api/incidents/:id shows reasons + events with working run
+  links; existing views unchanged.
+- EXPLAIN list + events as ops_dashboard_ro (index scans; events bounded).
+
+Read-only / least-privilege constraints:
+- ops_dashboard_ro gains SELECT on exactly the two incidents tables, fail-closed-verified.
+  The dashboard never writes the incidents schema; no code path can.
+
+Schema assumptions to confirm live:
+- incidents.incidents / error_events column lists (incl. category_source, entity on
+  error_events), the (fingerprint, dt DESC) index, and severity/state vocabularies.
+
+Review questions:
+- Does every category rendering carry its provenance? Could an oracle category be
+  mistaken for a diagnosis anywhere?
+- Are the tile numbers provably the same GROUP BY the list filters against?
+- Can any input reach Postgres uninterpolated-unvalidated? (severity/state/category
+  normalizers, the :id regex)
+- Is the drill-down bounded (LIMIT + index) even for a 25k-event incident?

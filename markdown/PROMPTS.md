@@ -29,9 +29,13 @@ direction is to **harden and future-proof** it:
   (Phases 12–14, all read-only/additive)
 - deepen the relationship between the monitoring data and the apps it watches, as
   read-only insight for a human (never write-back): pivot from per-app to
-  per-equipment-system correlation (Phase 17), then error-category trends (Phase 18),
-  an onboarding suite-health overview + legend (Phase 19), and an actionable
-  error→owner/action insights feed (Phase 20). Roadmap in `notes/`/the approved plan.
+  per-equipment-system correlation (Phase 17), then surface **incident-engine**'s
+  classified, severity-assessed incidents (Phase 19). The originally planned
+  "error-category trends" and "error→owner/action insights feed" phases are
+  **superseded**: a dedicated writer app (`/opt/apps/incident-engine`) now does that
+  classification/assessment upstream and publishes the `incidents` schema; this
+  dashboard displays it (read-only, fail-closed grant). An onboarding suite-health
+  overview + legend remains open roadmap.
 
 Current decisions:
 
@@ -87,6 +91,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 17 | `prompt_17_per_system_view.txt` | Completed | Per-equipment-system correlation view: `GET /api/systems` (cross-app per-`note.sme` warn/error rollup, worst-first) + `GET /api/systems/:id` (breakdown by `(app,type,func)` with latest run drill-down, joined to `alert.*` for the classified `error_category`). `#systems`/`#system=<id>` routed views + top-nav link; connectivity/acq system ids now link in. `warn_error_logs`-only (EXPLAIN-pruned), request-path (clamp 1..168h). No new grant (reads `util`+`alert`). Read-only insight, no write-back. See PHASE_LOG. |
 
 | 18 | — (ad-hoc user request; no prompt file) | Completed | data_acquisition run-log **job type**: the 12h-runs dropdown labels each run with its real job (`hhm/CT`, `mmb #3`, `ip_reset`…) from the `runJob` event's `run_group`/`modality`/`schedule` — a deliberate, bounded Performance-Rule exception (LATERAL after ORDER BY+LIMIT, ≤50 rows, data_acquisition endpoint only, ~10ms). Additive `jobType` API field. See PHASE_LOG. |
+| 19 | `prompt_19_incidents_view.txt` | Completed | **Incidents view** over incident-engine's `incidents` schema (the fourth read surface, fail-closed): `GET /api/incidents` (severity×state tile rollup + filterable list) + `GET /api/incidents/:id` (assessment reasons/action + raw-event drill-down via `(fingerprint, entity)`). `#incidents`/`#incident=<id>` views + nav; entity links to `#system=`. `category_source='oracle'` renders as a hint-badge, never a diagnosis. Request-path (no detoast); supersedes old roadmap 18/20. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -115,6 +120,8 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 15 | `phase-15-acquisition-systems` |
 | 16 | `phase-16-da-inline-runs` |
 | 17 | `phase-17-per-system-view` |
+| 18 | `phase-17-per-system-view` (ad-hoc; shares the branch) |
+| 19 | `phase-19-incidents-view` |
 
 Check `git status --short` before creating or switching branches.
 

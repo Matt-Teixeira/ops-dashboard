@@ -12,6 +12,7 @@ const connectivity = require("./lib/connectivity");
 const appRunsLib = require("./lib/app-runs");
 const acq = require("./lib/acq");
 const systemsLib = require("./lib/systems");
+const incidentsLib = require("./lib/incidents");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
@@ -40,6 +41,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Equipment system ids (note.sme) look like SME01234; accept the broader safe set of
 // id characters and reject anything odd before it reaches the (bound) query param.
 const SYSTEM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+// Incident ids are BIGSERIAL; reject anything non-numeric before the ::bigint cast.
+const INCIDENT_ID_RE = /^\d{1,12}$/;
 
 // The job grid is served from an in-process incremental cache (lib/run-cache.js).
 // The underlying query detoasts large verbose_log JSON, so we keep it off the
@@ -289,6 +293,58 @@ function buildApp() {
         asOf: now.toISOString(),
         connectivity: systemsLib.pickSystem(connectivity.decorate(connRows, now), systemId),
         breakdown: systemsLib.shapeDetail(rows),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Incidents (Phase 19): read-only over the incidents schema, which is produced by
+  // incident-engine (the writer; see its integration brief). One response carries the
+  // severity/state rollup (the tiles -- and the UI's self-check: tiles must equal the
+  // GROUP BY) plus the filtered list. Small indexed table (~530 rows), no json blob to
+  // detoast -> request path, no cache (house precedent: connectivity).
+  app.get("/api/incidents", async (req, res, next) => {
+    const severity = incidentsLib.normalizeSeverity(req.query.severity);
+    const state = incidentsLib.normalizeState(req.query.state);
+    const category = incidentsLib.normalizeCategory(req.query.category);
+    const limit = appRunsLib.clampInt(req.query.limit, 1000, 1, 2000);
+    try {
+      const [rollupRows, listRows] = await Promise.all([
+        queries.incidentsRollup(),
+        queries.incidentsList(severity, state, category, limit),
+      ]);
+      const incidents = incidentsLib.shapeIncidents(listRows);
+      res.json({
+        asOf: new Date().toISOString(),
+        filters: { severity, state, category },
+        rollup: incidentsLib.shapeRollup(rollupRows),
+        count: incidents.length,
+        incidents,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // One incident + the raw L0 events behind it (drill-down over incidents.error_events,
+  // keyed by the incident's (fingerprint, entity) to hit its index; LIMIT-bounded).
+  app.get("/api/incidents/:id", async (req, res, next) => {
+    const id = req.params.id;
+    if (!INCIDENT_ID_RE.test(id)) {
+      return res.status(400).json({ error: "invalid incident id" });
+    }
+    const eventLimit = appRunsLib.clampInt(req.query.eventLimit, 100, 1, 500);
+    try {
+      const row = await queries.incidentById(id);
+      if (!row) return res.status(404).json({ error: "incident not found" });
+      const events = await queries.incidentEvents(row.fingerprint, row.entity, eventLimit);
+      const [incident] = incidentsLib.shapeIncidents([row]);
+      res.json({
+        asOf: new Date().toISOString(),
+        incident,
+        eventLimit,
+        events: incidentsLib.shapeEvents(events),
       });
     } catch (err) {
       next(err);
