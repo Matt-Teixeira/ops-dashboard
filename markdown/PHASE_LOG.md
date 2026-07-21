@@ -24,8 +24,10 @@ Pending
 
 Review Artifacts:
 
-- Review handoff: `notes/review_handoff_phase_19.md`
+- Review handoff: `notes/review_handoff_phase_19.md` — the Codex briefing, scoped to
+  the whole unreviewed branch (Phases 17–19). **Codex result: pending.**
 - Producer contract: `/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md`
+- Schema-owner review: accepted/closed out (see Review Notes below)
 
 ## Goals
 
