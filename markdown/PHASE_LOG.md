@@ -25,7 +25,8 @@ Pending
 Review Artifacts:
 
 - Review handoff: `notes/review_handoff_phase_19.md` — the Codex briefing, scoped to
-  the whole unreviewed branch (Phases 17–19). **Codex result: pending.**
+  the whole unreviewed branch (Phases 17–19). **Codex result: 5 findings (1 high /
+  3 medium / 1 low), all accepted and fixed same-phase — see Review Notes.**
 - Producer contract: `/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md`
 - Schema-owner review: accepted/closed out (see Review Notes below)
 
@@ -153,6 +154,40 @@ Source: incident-engine (the schema owner) reviewed the integration end-to-end
 
 Critical issues: none. One test regex fixed during development (`inserted_at` matched
 `/INSERT/` — now word-bounded).
+
+### Codex review (branch-wide, Phases 17–19) — 5 findings, all accepted + fixed
+
+Codex confirmed no read-only / SQL-injection / partition-pruning / XSS violations, and
+found (all fixed in the same review commit):
+
+1. **High — the P18 job-type LATERAL was not guaranteed to run after LIMIT**
+   (`db/queries.js`). Codex produced a plan (incremental sort disabled) where every
+   qualifying `verbose_log` detoasted before the page limit — my handoff weak-spot #3,
+   proven. Fix: the page (filter + keyset + ORDER BY + LIMIT) is now selected in a
+   **MATERIALIZED CTE** and the LATERAL consumes `page.verbose_log`, so the bound is
+   enforced by query shape, not planner cooperation. New SQL-shape assertions (CTE
+   materialized under withJobType; `LIMIT $5` precedes the LATERAL; LATERAL reads the
+   CTE). Adversarial re-EXPLAIN (sort off, 14-day window, 15,778 candidates): detoast
+   runs exactly 50 times, 38ms.
+2. **Medium — the 50-row detoast ceiling wasn't enforced** (`server.js`): DA callers
+   could request `limit=500`. Fix: for `data_acquisition` both default and max clamp
+   to 50 (lean apps keep 200/500). Live: `limit=500` → 50 rows + cursor.
+3. **Medium — the systems window (1..168h) blew the request-path budget**: 168h
+   measured 2.28s warm / 4.25s cold. Fix: max clamp 48h (24h ≈ 0.4s, 48h ≈ 0.8s) on
+   both `/api/systems` routes AND on the env default (a misconfigured
+   `SYSTEMS_WINDOW_HOURS` can't reopen it). `ENVIRONMENT.md` updated. A 7-day
+   aggregate would need a cached/precomputed path — deferred.
+4. **Medium — oracle categories still read as diagnoses**: only a side label was
+   muted; the category text itself was plain in the list cell and detail heading.
+   Fix: one `categoryNode()` renderer used everywhere — under `oracle` provenance the
+   category text ITSELF sits inside the dashed muted tooltip element
+   ("`rsync_io_timeout · oracle`"); the redundant side badge removed.
+5. **Low — malformed `confidence` rendered "NaN (rules)"**: `Number(r.confidence)`
+   could yield NaN. Fix: finite-or-null in `lib/incidents.js` + a malformed-confidence
+   test matrix.
+
+Post-fix validation: 113/113 tests; restart + live re-smoke green (DA clamp, lean-app
+500 intact, systems 48h echo, incidents unaffected, clean boot).
 
 ## Follow-Up Tasks
 

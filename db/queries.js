@@ -139,11 +139,30 @@ FROM alert.offline_mmb_conn;
 // event inside verbose_log, so surfacing it costs a verbose_log detoast. That is
 // normally forbidden on this lean path (Performance Rule), so the job-type columns
 // are added ONLY in the withJobType variant, wired up ONLY for the data_acquisition
-// runs endpoint (server.js). The extraction is a LATERAL the planner evaluates
-// AFTER ORDER BY + LIMIT (EXPLAIN: `Function Scan` loops = LIMIT, single monthly
-// partition Index Scan, ~10ms for 50 rows), so the detoast is bounded to ONE page,
-// on demand. run_group is 1:1 per run; the label is formatted in lib/app-runs.js.
+// runs endpoint (server.js), whose page size is clamped to 50 for this app.
+//
+// The page is selected in a MATERIALIZED CTE (filter + keyset + ORDER BY + LIMIT)
+// and the verbose_log LATERAL runs over that CTE's <= $5 rows, so the detoast bound
+// is enforced by the QUERY SHAPE, not by planner cooperation. (Codex review of the
+// original formulation proved a LEFT JOIN LATERAL before ORDER BY+LIMIT can be
+// planned as Limit -> Sort -> Nested Loop, detoasting every qualifying row.)
 const buildAppRunsSql = (withJobType) => `
+WITH page AS ${withJobType ? `MATERIALIZED ` : ``}(
+  SELECT run_id, inserted_at, warn_error_logs${withJobType ? `, verbose_log` : ``}
+  FROM util.app_run_logs
+  WHERE app_name = $1
+    AND inserted_at > $2::timestamptz
+    AND ($3::timestamptz IS NULL OR (inserted_at, run_id) < ($3::timestamptz, $4::uuid))
+    -- Status filter (Phase 13): a narrowing predicate, so keyset pagination is
+    -- unaffected. $6 is a normalized enum ('all'|'error'|'issues'), never interpolated.
+    AND (
+      $6 = 'all'
+      OR ($6 = 'error'  AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))
+      OR ($6 = 'issues' AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' IN ('ERROR', 'WARN')))
+    )
+  ORDER BY inserted_at DESC, run_id DESC
+  LIMIT $5
+)
 SELECT
   run_id,
   to_char(inserted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS inserted_at_iso,
@@ -156,27 +175,16 @@ SELECT
   rj.run_group AS da_run_group,
   rj.modality  AS da_modality,
   rj.schedule  AS da_schedule` : ``}
-FROM util.app_run_logs${withJobType ? `
+FROM page${withJobType ? `
 LEFT JOIN LATERAL (
   SELECT e->'note'->>'run_group' AS run_group,
          e->'note'->>'modality'  AS modality,
          e->'note'->>'schedule'  AS schedule
-  FROM json_array_elements(COALESCE(verbose_log, '[]'::json)) e
+  FROM json_array_elements(COALESCE(page.verbose_log, '[]'::json)) e
   WHERE e->>'func' = 'runJob'
   LIMIT 1
 ) rj ON true` : ``}
-WHERE app_name = $1
-  AND inserted_at > $2::timestamptz
-  AND ($3::timestamptz IS NULL OR (inserted_at, run_id) < ($3::timestamptz, $4::uuid))
-  -- Status filter (Phase 13): a narrowing predicate, so keyset pagination is
-  -- unaffected. $6 is a normalized enum ('all'|'error'|'issues'), never interpolated.
-  AND (
-    $6 = 'all'
-    OR ($6 = 'error'  AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))
-    OR ($6 = 'issues' AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' IN ('ERROR', 'WARN')))
-  )
-ORDER BY inserted_at DESC, run_id DESC
-LIMIT $5;
+ORDER BY inserted_at DESC, run_id DESC;
 `;
 const APP_RUNS_SQL = buildAppRunsSql(false);
 const APP_RUNS_JOBTYPE_SQL = buildAppRunsSql(true);

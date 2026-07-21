@@ -21,7 +21,13 @@ const APP_RUNS_LIMIT = Number(process.env.APP_RUNS_LIMIT || 200);
 const APP_HEALTH_WINDOW_HOURS = Number(process.env.APP_HEALTH_WINDOW_HOURS || 24);
 const APP_HEALTH_WINDOW_MS = APP_HEALTH_WINDOW_HOURS * 60 * 60 * 1000;
 const ACQ_WINDOW_HOURS = Number(process.env.ACQ_WINDOW_HOURS || 24);
-const SYSTEMS_WINDOW_HOURS = Number(process.env.SYSTEMS_WINDOW_HOURS || 24);
+// Systems-view window. Max 48h: the per-event unnest over warn_error_logs scales with
+// the window and 168h measured 2.3s warm / 4.3s cold (Codex, Phase 19 review) -- over
+// the request-path budget. 24h ~ 0.4s, 48h ~ 0.8s. The env default is clamped too, so
+// misconfiguration can't reopen the hole; a 7d aggregate would need a cached/
+// precomputed path (deferred).
+const SYSTEMS_WINDOW_MAX_HOURS = 48;
+const SYSTEMS_WINDOW_HOURS = Math.min(Math.max(Number(process.env.SYSTEMS_WINDOW_HOURS || 24) || 24, 1), SYSTEMS_WINDOW_MAX_HOURS);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
@@ -254,7 +260,7 @@ function buildApp() {
   // (no verbose_log detoast), partition-pruned; served direct like connectivity/acq.
   app.get("/api/systems", async (req, res, next) => {
     try {
-      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, 168);
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, SYSTEMS_WINDOW_MAX_HOURS);
       const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
       const rows = await queries.systemsLatest(since, 500);
       res.json({
@@ -280,7 +286,7 @@ function buildApp() {
       return res.status(400).json({ error: "invalid system id" });
     }
     try {
-      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, 168);
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, SYSTEMS_WINDOW_MAX_HOURS);
       const now = new Date();
       const since = new Date(now.getTime() - windowHours * 60 * 60 * 1000).toISOString();
       const [rows, connRows] = await Promise.all([
@@ -359,7 +365,13 @@ function buildApp() {
   app.get("/api/apps/:app/runs", async (req, res, next) => {
     const appName = req.params.app; // express decodes %xx
     const windowHours = appRunsLib.clampInt(req.query.windowHours, APP_RUNS_LOOKBACK_HOURS, 1, 720);
-    const limit = appRunsLib.clampInt(req.query.limit, APP_RUNS_LIMIT, 1, 500);
+    // data_acquisition pages carry the Phase 18 verbose_log job-type extraction, so its
+    // detoast ceiling is the page size: default AND max clamp to 50 for that app (the
+    // documented bound -- Codex found limit=500 blew it 10x). Lean apps keep 200/500.
+    const withJobType = appName === "data_acquisition";
+    const limit = withJobType
+      ? appRunsLib.clampInt(req.query.limit, 50, 1, 50)
+      : appRunsLib.clampInt(req.query.limit, APP_RUNS_LIMIT, 1, 500);
     // Optional keyset cursor (the previous page's last row). Validate both parts
     // the same way the drill-down validates its id/timestamp hints.
     const before = req.query.before;
@@ -376,10 +388,6 @@ function buildApp() {
     const status = appRunsLib.normalizeStatusFilter(req.query.status); // all | error | issues
     try {
       const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
-      // data_acquisition is bucketed as (default) in the grid; its real per-run job
-      // type lives in verbose_log's runJob event (Phase 18). Enable the extra
-      // (bounded) verbose_log detoast for this app only -- every other app stays lean.
-      const withJobType = appName === "data_acquisition";
       const rows = await queries.appRuns(appName, since, limit, cursorTs, cursorId, status, withJobType);
       const page = appRunsLib.shapePage(rows, limit);
       res.json({ app: appName, windowHours, status, count: page.runs.length, ...page });

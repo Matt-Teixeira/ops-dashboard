@@ -1341,17 +1341,24 @@
       return b;
     }
 
-    function categoryCell(category, categorySource) {
-      const td = document.createElement("td");
-      td.textContent = category;
+    // The one category renderer for every surface (Codex Phase 19 review, medium):
+    // when provenance is 'oracle' the category TEXT ITSELF sits inside the dashed,
+    // muted, tooltip-bearing element -- a normal-looking category with a side label
+    // still read as a diagnosis, which is exactly what the provenance rule forbids.
+    function categoryNode(category, categorySource) {
       if (categorySource === "oracle") {
-        td.appendChild(document.createTextNode(" "));
         const b = document.createElement("span");
         b.className = "badge cat-oracle";
-        b.textContent = "oracle";
+        b.textContent = category + " · oracle";
         b.title = ORACLE_TIP;
-        td.appendChild(b);
+        return b;
       }
+      return document.createTextNode(category);
+    }
+
+    function categoryCell(category, categorySource) {
+      const td = document.createElement("td");
+      td.appendChild(categoryNode(category, categorySource));
       return td;
     }
 
@@ -1486,19 +1493,16 @@
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
       h2.style.margin = ".4rem 0 .2rem";
-      h2.textContent = `Incident #${i.id} — ${i.category}`;
+      // The heading's category goes through the same provenance-aware renderer as the
+      // list -- an oracle category must not read as a diagnosis anywhere.
+      h2.textContent = `Incident #${i.id} — `;
+      h2.appendChild(categoryNode(i.category, i.categorySource));
       view.appendChild(h2);
 
       const badges = document.createElement("div");
       badges.appendChild(sevBadge(i.severity));
       badges.appendChild(document.createTextNode(" "));
       badges.appendChild(stateBadge(i.state));
-      if (i.categorySource === "oracle") {
-        badges.appendChild(document.createTextNode(" "));
-        const b = document.createElement("span");
-        b.className = "badge cat-oracle"; b.textContent = "oracle category"; b.title = ORACLE_TIP;
-        badges.appendChild(b);
-      }
       view.appendChild(badges);
 
       const meta = document.createElement("dl");

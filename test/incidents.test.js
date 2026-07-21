@@ -86,6 +86,17 @@ test("shapeIncidents: defensive defaults; non-array -> []", () => {
   assert.deepEqual(i.assessment, { reasons: [], recommendedAction: null });
 });
 
+test("shapeIncidents: malformed confidence -> null, never NaN (Codex low finding)", () => {
+  const shape = (confidence) => shapeIncidents([{ id: 1, confidence }])[0].confidence;
+  assert.equal(shape("0.30"), 0.3);      // NUMERIC arrives as a string
+  assert.equal(shape(1), 1);
+  assert.equal(shape(null), null);
+  assert.equal(shape(undefined), null);
+  assert.equal(shape("garbage"), null);  // was NaN -> rendered "NaN (rules)"
+  assert.equal(shape(NaN), null);
+  assert.equal(shape(Infinity), null);
+});
+
 test("shapeRollup: totals equal the GROUP BY (the tile self-check), all keys present", () => {
   const rows = [
     { severity: "high", state: "open", n: 100 },

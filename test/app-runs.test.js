@@ -133,4 +133,12 @@ test("buildAppRunsSql: partition-pruned, keyset, parameterized filter; lean path
   const lean = sql.replace(/\$\{withJobType \? `[\s\S]*?` : ``\}/g, "");
   assert.doesNotMatch(lean, /verbose_log/, "lean path never touches verbose_log (no detoast)");
   assert.match(sql, /withJobType \?[\s\S]*?run_group[\s\S]*?verbose_log/, "job type is extracted from verbose_log only under withJobType");
+  // Codex high finding (Phase 19 review): the detoast bound must come from the QUERY
+  // SHAPE, not planner cooperation. The page CTE is MATERIALIZED under withJobType,
+  // it is LIMITed BEFORE the LATERAL exists in the plan, and the LATERAL consumes the
+  // CTE's rows (page.verbose_log) -- never the base table.
+  assert.match(sql, /WITH page AS \$\{withJobType \? `MATERIALIZED ` : ``\}/, "page CTE materialized under withJobType");
+  assert.ok(sql.indexOf("LIMIT $5") < sql.indexOf("LEFT JOIN LATERAL"), "page is LIMITed before the LATERAL");
+  assert.match(sql, /json_array_elements\(COALESCE\(page\.verbose_log/, "LATERAL consumes the materialized page, not the base table");
+  assert.match(sql, /FROM page/, "outer select reads the page CTE");
 });
