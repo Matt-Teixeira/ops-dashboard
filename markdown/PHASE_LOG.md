@@ -28,8 +28,15 @@ Review Artifacts:
   the whole unreviewed branch (Phases 17–19). **Codex result: 5 findings (1 high /
   3 medium / 1 low), all accepted and fixed same-phase — see Review Notes.**
 - Fix-round handoff: `notes/review_handoff_phase_19_fixes.md` — delta review of the
-  fix commit `e1e676c` (per-finding verdicts + fix-introduced risks).
-  **Re-review result: pending.**
+  fix commit `e1e676c`. **Re-review result: ALL FIVE FINDINGS CLOSED** (Codex verdicts:
+  1 — CTE structurally bounds the LATERAL, adversarial loops=50 @ 42.6ms; 2 — DA
+  clamps to 50 w/ cursor, lean apps keep 500; 3 — both routes cap 48h, env defaults
+  resolve sanely incl. NaN/zero→24, negative→1, oversized→48; 4 — category text
+  provenance-styled in list + heading, textContent-safe, valid inline span; 5 —
+  non-finite confidence → null, the `""`→0 edge unreachable from pg NUMERIC).
+  One new **nit** (stale config docs: `APP_RUNS_LIMIT` missing the DA 50-row
+  exception; `.env.example` still said systems 1..168) — fixed same round in
+  `ENVIRONMENT.md` + `.env.example`. **Review cycle complete.**
 - Producer contract: `/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md`
 - Schema-owner review: accepted/closed out (see Review Notes below)
 
