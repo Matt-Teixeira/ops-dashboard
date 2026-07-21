@@ -1,0 +1,128 @@
+Phase 17 - Per-System (Equipment) Correlation View
+
+Goal:
+Reframe the dashboard around the physical equipment system, not just the app. The same
+system (identified by note.sme, e.g. SME20487) surfaces warnings/errors across MULTIPLE
+apps -- data_acquisition (the pull) and the hhm_rpp_* parsers (the downstream parse) --
+but today those signals are only ever shown per-app, so an operator can't see one
+system's whole story or tell root cause from downstream noise. Add a read-only,
+cross-app per-system view: a worst-first LIST of systems with recent issues, and a
+per-system DETAIL that breaks its issues down by (app, type, func) and joins the
+classified connectivity state. This is the "deeper relationship" between the monitoring
+data and the apps it watches -- surfaced as insight for a human, never a write-back.
+
+Background (verified live this session - do not re-discover):
+- util.app_run_logs.warn_error_logs and verbose_log are `json` (NOT jsonb) -> use
+  json_array_elements and ->/->> ; no jsonb operators (@>, jsonb_array_elements).
+- The system key in an event is `note->>'sme'` ONLY. `note->'system'->>'id'` is never
+  populated (0/166k events in 7d) -- do NOT add it as a fallback.
+- error_category is NOT reliably in the run-log note: only 625/166k data_acquisition
+  events carry it and the only 7d value was "hanging_exec". The real classified enum
+  (connection_timeout, max_retries, rsync_io_timeout, credentials, host_key_changed,
+  connection_reset, host_unreachable, partial_transfer_timeout, session_timeout,
+  key_exchange, host_key_new, file_missing_partial, ...) lives in the alert.* tables
+  (alert.offline_hhm_conn / offline_mmb_conn), one row per system. So: use `func` as the
+  in-log grouping axis, and JOIN the alert.* state (already read by /api/connectivity)
+  for the classified category in the detail view.
+- Cross-app correlation is real: e.g. SME20487, SME16421, SME16411 each appear in BOTH
+  data_acquisition and hhm_rpp_philips in 7d; many systems span 2 apps.
+- Volume/perf (system-keyed warn/error events, LATERAL unnest of warn_error_logs only --
+  NO verbose_log detoast): 24h ~ 227 systems in ~150ms; 7d ~ 241 systems in ~2.2s.
+  EXPLAIN confirms partition pruning: Index Scan on app_run_logs_2026_06_inserted_at_idx
+  with `inserted_at > $1`. -> default window 24h, clamp max 168h (7d is the slow ceiling);
+  request-path direct like connectivity/acq (no cache, no detoast).
+- No new grant: this reads util.app_run_logs (already granted) + alert.* (granted in
+  Phase 10). Unlike Phase 15 there is NO setup-readonly-role.sql / deploy grant step.
+
+Scope:
+- Query in db/queries.js:
+  - SYSTEMS_LATEST_SQL + systemsLatest(sinceIso, limit): per note.sme across ALL apps in
+    the window -> issues=count(*), errors=count FILTER type='ERROR', warns=count FILTER
+    type='WARN', apps=count(DISTINCT app_name), which=string_agg(DISTINCT app_name),
+    last_seen=to_char(max(inserted_at)...). WHERE inserted_at > $1::timestamptz; unnest
+    warn_error_logs via LATERAL json_array_elements; WHERE sme IS NOT NULL; GROUP BY sme;
+    ORDER BY errors DESC, issues DESC, sme; LIMIT $2. No verbose_log.
+  - SYSTEM_DETAIL_SQL + systemDetail(systemId, sinceIso): for one sme -> GROUP BY
+    (app_name, type, func) with n=count(*), last_run_id=(array_agg(run_id ORDER BY
+    inserted_at DESC))[1], last_inserted_at=to_char(max(inserted_at)...). The sme is a
+    BOUND param ($1), never interpolated. Same window filter + unnest; no verbose_log.
+    ORDER BY (type='ERROR') DESC, n DESC, app_name, func.
+- lib/systems.js (server-only, pure; mirrors lib/acq.js / lib/connectivity.js):
+  - shapeSystems(rows) -> camelCase list incl. apps split of `which` into an array.
+  - summarize(rows) -> { systems, errors, warns, crossApp } (crossApp = # systems in >1
+    app) for the list header.
+  - shapeDetail(rows) -> camelCase breakdown rows (app, type, func, count, lastRunId,
+    lastInsertedAt).
+  - pickSystem(decoratedConnectivity, systemId) -> the connectivity rows (HHM/MMB) for
+    that system, reusing connectivity.decorate output. Pure.
+  All unit-tested.
+- server.js:
+  - GET /api/systems?windowHours=<n> (clamp via appRunsLib.clampInt, default env
+    SYSTEMS_WINDOW_HOURS=24, 1..168) -> { windowHours, asOf, count, summary, systems }.
+  - GET /api/systems/:id?windowHours=<n> -> validate id against a strict shape
+    (/^[A-Za-z0-9_-]{1,64}$/, 400 otherwise), clamp window -> { systemId, windowHours,
+    asOf, connectivity, breakdown }. connectivity from queries.connectivity() decorated
+    + systems.pickSystem. Thin handlers; errors via the shared sanitized 500.
+- public/index.html:
+  - Add a "systems" link in the top nav (next to "connectivity").
+  - Add #systems (list) and #system=<id> (detail) routed views. Introduce a
+    hideAllViews() helper (hides every view section) so each show* function -- new and
+    existing -- can't leave a stale sibling visible now that there are 7 views; replace
+    the repeated per-function hide blocks with it (behavior-preserving cleanup).
+  - List: worst-first table (System, Errors, Warns, Apps, Last seen); rows with errors>0
+    get .row-ERROR; each System links to #system=<id>; header shows summary (systems,
+    crossApp).
+  - Detail: header (system id, window, connectivity status/category from alert.*), then a
+    breakdown table (App, Type, Func, Count, latest run -> drill-down via runHref using
+    lastRunId + lastInsertedAt hint). Text via textContent; reuse backLink/connMessage/
+    cell/fmtTime/runHref + the runReq guard + show/hide.
+  - Cross-link INTO the detail: make the System id in the connectivity and acquisition
+    views link to #system=<id>.
+- Config: SYSTEMS_WINDOW_HOURS in .env.example + markdown/ENVIRONMENT.md.
+
+Non-goals:
+- No writes; no auto-remediation; no changes to the OTHER apps' repos. Read-only insight
+  only.
+- No error-category analytics/trends over time (that is Phase 18) and no actionable
+  error->owner mapping (Phase 20). This phase is the correlation backbone only.
+- No new grant/schema/index; no cache (served direct); no pagination (list LIMIT 500,
+  worst-first, in a bounded window).
+- Do not read verbose_log on the request path; do not add note.system.id or
+  error_category-from-note as axes (verified absent/unreliable).
+
+Expected files / layers:
+- db/queries.js (SYSTEMS_LATEST_SQL + SYSTEM_DETAIL_SQL + two fns), lib/systems.js (new,
+  pure) + test/systems.test.js (new), server.js (two routes + clamp + id validation),
+  public/index.html (nav link, #systems + #system views, hideAllViews, cross-links),
+  .env.example, markdown/ENVIRONMENT.md, markdown/PROMPTS.md + PHASE_LOG.md (Step 7).
+
+Expected validation:
+- node --test: lib/systems (shapeSystems apps-split + camelCase; summarize crossApp
+  count; shapeDetail mapping; pickSystem filter; non-array tolerance) + SQL text guards
+  (both templates: inserted_at > $ window filter, json_array_elements, GROUP BY, no
+  verbose_log, sme bound as $1 in detail).
+- Live smoke: GET /api/systems returns ~227 systems worst-first in 24h with a summary;
+  GET /api/systems/<a cross-app sme> shows a per-(app,type,func) breakdown + its alert.*
+  connectivity; the top-nav "systems" link and the connectivity/acq system links open the
+  views; a breakdown "latest run" opens the existing drill-down; grid/connectivity/
+  run-log/acq/healthz all still work.
+- Live EXPLAIN: SYSTEMS_LATEST_SQL is partition-pruned (inserted_at index, no full scan)
+  and touches warn_error_logs only (no verbose_log).
+
+Read-only / least-privilege constraints:
+- Read-only. NO new grant (util + alert already granted). No writes/DDL. warn_error_logs
+  only on the request path (no verbose_log detoast). Partition-pruned window.
+
+Schema assumptions to confirm live (before coding) -- already verified this session:
+- warn_error_logs is json; system key is note.sme only; error_category is in alert.*, not
+  the note; the windowed per-system aggregate is partition-pruned and ~150ms at 24h.
+
+Review questions:
+- Is the system key strictly note.sme (no dead system.id fallback), and is error_category
+  taken from alert.* (not the unreliable note field)?
+- Are both queries partition-pruned, warn_error_logs-only (no verbose_log), and is the
+  detail sme a bound param (no interpolation)?
+- Is the request-path cost bounded (default 24h, max 168h clamp) and is :id validated?
+- Is lib/systems pure + unit-tested; is a DB error a sanitized 500?
+- Does hideAllViews leave no view able to strand a stale sibling, and do the grid,
+  connectivity, run-log, acquisition, and cache stay behavior-unchanged?

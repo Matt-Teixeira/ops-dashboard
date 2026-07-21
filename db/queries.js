@@ -215,6 +215,80 @@ function acquisitionSystems(sinceIso) {
   return db.any(ACQ_SYSTEMS_SQL, [sinceIso]);
 }
 
+// Per-system (equipment) correlation LIST (Phase 17): the same physical system
+// (note.sme) raises warn/error events across MULTIPLE apps -- data_acquisition (the
+// pull) and the hhm_rpp_* parsers (the downstream parse). This rolls those up per sme
+// across ALL apps in the window so an operator sees which equipment is unhealthy and
+// whether it spans apps (a root-cause signal). warn_error_logs-only (small, pre-filtered)
+// -- verbose_log is NEVER touched, so no detoast even though data_acquisition logs
+// ~1100x/24h. Partition-pruned via `inserted_at > $1` (EXPLAIN: Index Scan on the
+// monthly partition's inserted_at index). The system key is note.sme ONLY --
+// note.system.id is never populated. LIMIT $2 caps the payload; ordered worst-first.
+const SYSTEMS_LATEST_SQL = `
+WITH ev AS (
+  SELECT
+    l.app_name,
+    l.inserted_at,
+    NULLIF(e->'note'->>'sme', '') AS sme,
+    e->>'type'                    AS type
+  FROM util.app_run_logs l,
+       LATERAL json_array_elements(COALESCE(l.warn_error_logs, '[]'::json)) e
+  WHERE l.inserted_at > $1::timestamptz
+)
+SELECT
+  sme,
+  count(*)::int                                        AS issues,
+  count(*) FILTER (WHERE type = 'ERROR')::int          AS errors,
+  count(*) FILTER (WHERE type = 'WARN')::int           AS warns,
+  count(DISTINCT app_name)::int                        AS apps,
+  string_agg(DISTINCT app_name, ',' ORDER BY app_name) AS which,
+  to_char(max(inserted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_seen
+FROM ev
+WHERE sme IS NOT NULL
+GROUP BY sme
+ORDER BY errors DESC, issues DESC, sme
+LIMIT $2;
+`;
+
+// Per-system correlation DETAIL (Phase 17): for ONE system, break its warn/error events
+// down by (app, type, func) over the window, with the latest run_id per group so each
+// line links to the existing drill-down. `func` is the in-log categorization axis (the
+// classified error_category lives in alert.*, joined in the handler, not here). The sme
+// is a BOUND param ($1) -- never interpolated. warn_error_logs-only, partition-pruned via
+// `inserted_at > $2`. Worst-first (errors, then frequency).
+const SYSTEM_DETAIL_SQL = `
+WITH ev AS (
+  SELECT
+    l.app_name,
+    l.run_id,
+    l.inserted_at,
+    e->>'type'                            AS type,
+    COALESCE(NULLIF(e->>'func', ''), '(none)') AS func
+  FROM util.app_run_logs l,
+       LATERAL json_array_elements(COALESCE(l.warn_error_logs, '[]'::json)) e
+  WHERE l.inserted_at > $2::timestamptz
+    AND NULLIF(e->'note'->>'sme', '') = $1
+)
+SELECT
+  app_name,
+  type,
+  func,
+  count(*)::int                                     AS n,
+  (array_agg(run_id ORDER BY inserted_at DESC))[1]  AS last_run_id,
+  to_char(max(inserted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_inserted_at
+FROM ev
+GROUP BY app_name, type, func
+ORDER BY (type = 'ERROR') DESC, n DESC, app_name, func;
+`;
+
+function systemsLatest(sinceIso, limit = 500) {
+  return db.any(SYSTEMS_LATEST_SQL, [sinceIso, limit]);
+}
+
+function systemDetail(systemId, sinceIso) {
+  return db.any(SYSTEM_DETAIL_SQL, [systemId, sinceIso]);
+}
+
 function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, statusFilter = "all") {
   return db.any(APP_RUNS_SQL, [appName, sinceIso, beforeIso, beforeId, limit, statusFilter]);
 }
@@ -234,4 +308,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, ping };

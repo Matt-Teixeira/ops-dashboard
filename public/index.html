@@ -64,7 +64,7 @@
 </head>
 <body>
   <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
-  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a></div>
+  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a> &middot; <a href="#systems">systems</a></div>
 
   <!-- Dashboard view: job grid + error feed. Hidden while a run drill-down is open. -->
   <div id="dashboard">
@@ -111,6 +111,12 @@
 
   <!-- Per-system acquisition view (data_acquisition). Populated by showAcqSystems(). -->
   <section id="acq-view" hidden></section>
+
+  <!-- Per-system list: systems with recent issues across all apps. Populated by showSystems(). -->
+  <section id="systems-view" hidden></section>
+
+  <!-- Per-system detail: one system's cross-app breakdown. Populated by showSystem(). -->
+  <section id="system-view" hidden></section>
 
   <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
   <script src="grid-view.js"></script>
@@ -580,6 +586,16 @@
     const runHash = (id, hint) => "run=" + encodeURIComponent(id) + (hint ? "&at=" + encodeURIComponent(hint) : "");
     const runHref = (id, hint) => "#" + runHash(id, hint);
 
+    // Per-system detail link (Phase 17). systemCell renders an id that navigates to the
+    // cross-app view for that equipment; the connectivity and acquisition tables reuse it.
+    const systemHref = (id) => "#system=" + encodeURIComponent(id);
+    function systemCell(id) {
+      const td = document.createElement("td");
+      if (id) { const a = document.createElement("a"); a.href = systemHref(id); a.textContent = id; td.appendChild(a); }
+      else { td.textContent = "—"; }
+      return td;
+    }
+
     const RENDER_CAP = 500; // worst-case data_acquisition runs carry ~1600 events
 
     let dashboardLoaded = false;
@@ -737,12 +753,18 @@
     // instead of rendering into a stale or hidden view.
     let runReq = 0;
 
+    // Every routed view lives in its own <section>; hide them all before showing one, so
+    // a newly added view can never strand a stale sibling (7 views as of Phase 17).
+    function hideAllViews() {
+      for (const id of ["dashboard", "run-view", "connectivity-view", "appruns-view", "acq-view", "systems-view", "system-view"]) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = true;
+      }
+    }
+
     async function showRun(runId, hint) {
       const myReq = ++runReq;
-      document.getElementById("dashboard").hidden = true;
-      document.getElementById("connectivity-view").hidden = true;
-      document.getElementById("appruns-view").hidden = true;
-      document.getElementById("acq-view").hidden = true;
+      hideAllViews();
       const view = document.getElementById("run-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -767,10 +789,7 @@
 
     function showDashboard() {
       runReq++; // invalidate any in-flight run/connectivity/run-log fetch so it can't render after we leave
-      document.getElementById("run-view").hidden = true;
-      document.getElementById("connectivity-view").hidden = true;
-      document.getElementById("appruns-view").hidden = true;
-      document.getElementById("acq-view").hidden = true;
+      hideAllViews();
       document.getElementById("dashboard").hidden = false;
       if (!dashboardLoaded) refresh();
     }
@@ -883,10 +902,7 @@
 
     async function showAppRuns(app, status = "all") {
       const myReq = ++runReq;
-      document.getElementById("dashboard").hidden = true;
-      document.getElementById("run-view").hidden = true;
-      document.getElementById("connectivity-view").hidden = true;
-      document.getElementById("acq-view").hidden = true;
+      hideAllViews();
       const view = document.getElementById("appruns-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -965,7 +981,7 @@
       for (const s of systems) {
         const tr = document.createElement("tr");
         if (s.failed > 0) tr.className = "row-ERROR";
-        tr.appendChild(cell(s.systemId));
+        tr.appendChild(systemCell(s.systemId));
         tr.appendChild(cell(s.source));
         tr.appendChild(cell(s.modality || "—"));
         tr.appendChild(cell(s.manufacturer || "—"));
@@ -981,10 +997,7 @@
 
     async function showAcqSystems() {
       const myReq = ++runReq;
-      document.getElementById("dashboard").hidden = true;
-      document.getElementById("run-view").hidden = true;
-      document.getElementById("connectivity-view").hidden = true;
-      document.getElementById("appruns-view").hidden = true;
+      hideAllViews();
       const view = document.getElementById("acq-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -1067,7 +1080,7 @@
         const tr = document.createElement("tr");
         if (s.status === "OFFLINE") tr.className = "row-ERROR";
         tr.appendChild(cell(s.source));
-        tr.appendChild(cell(s.systemId));
+        tr.appendChild(systemCell(s.systemId));
         const st = cell("");
         const b = document.createElement("span");
         b.className = "badge " + (CONN_BADGE[s.status] || "unknown");
@@ -1089,10 +1102,7 @@
 
     async function showConnectivity() {
       const myReq = ++runReq; // share the navigation token so a stale fetch can't render
-      document.getElementById("dashboard").hidden = true;
-      document.getElementById("run-view").hidden = true;
-      document.getElementById("appruns-view").hidden = true;
-      document.getElementById("acq-view").hidden = true;
+      hideAllViews();
       const view = document.getElementById("connectivity-view");
       view.hidden = false;
       window.scrollTo(0, 0);
@@ -1111,6 +1121,167 @@
       renderConnectivity(view, data);
     }
 
+    // --- per-system correlation views (Phase 17) -----------------------------
+    // The same equipment system (note.sme) raises issues across multiple apps; these
+    // views pivot on the system so root cause vs. downstream noise is visible. The list
+    // is worst-first across all apps; the detail breaks one system down by (app, type,
+    // func) and shows its classified connectivity state from alert.*.
+
+    function renderSystems(view, data) {
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const systems = Array.isArray(data.systems) ? data.systems : [];
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "Systems with recent issues";
+      view.appendChild(h2);
+
+      const sum = data.summary || { systems: 0, errors: 0, warns: 0, crossApp: 0 };
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      sub.textContent =
+        `· ${systems.length} systems · ${sum.errors} errors · ${sum.warns} warns · ` +
+        `${sum.crossApp} span >1 app · last ${data.windowHours}h · as of ${fmtTime(data.asOf)}`;
+      view.appendChild(sub);
+
+      if (!systems.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No systems with warnings or errors in the window.";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["System", "Errors", "Warns", "Apps", "Last seen"]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const s of systems) {
+        const tr = document.createElement("tr");
+        if (s.errors > 0) tr.className = "row-ERROR";
+        else if (s.warns > 0) tr.className = "row-WARN";
+        tr.appendChild(systemCell(s.systemId));
+        tr.appendChild(cell(s.errors, "num"));
+        tr.appendChild(cell(s.warns, "num"));
+        tr.appendChild(cell(s.apps.join(", ")));
+        tr.appendChild(cell(fmtTime(s.lastSeen)));
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+    }
+
+    async function showSystems() {
+      const myReq = ++runReq;
+      hideAllViews();
+      const view = document.getElementById("systems-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      connMessage(view, "Loading systems…");
+      let res;
+      try { res = await fetch("/api/systems"); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load systems."); return; }
+      if (myReq !== runReq) return;
+      if (!res.ok) return connMessage(view, "Couldn't load systems.");
+      let data;
+      try { data = await res.json(); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load systems."); return; }
+      if (myReq !== runReq) return;
+      renderSystems(view, data);
+    }
+
+    function renderSystem(view, data) {
+      view.replaceChildren();
+      view.appendChild(backLink());
+      const breakdown = Array.isArray(data.breakdown) ? data.breakdown : [];
+      const conn = Array.isArray(data.connectivity) ? data.connectivity : [];
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "System " + (data.systemId || "?");
+      view.appendChild(h2);
+
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      const connText = conn.length
+        ? conn.map((c) => `${c.source}: ${c.status}${c.errorCategory ? " (" + c.errorCategory + ")" : ""}`).join(" · ")
+        : "no connectivity record";
+      sub.textContent = `· last ${data.windowHours}h · as of ${fmtTime(data.asOf)} · ${connText}`;
+      view.appendChild(sub);
+
+      if (!breakdown.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "No warnings or errors for this system in the window.";
+        view.appendChild(p);
+        return;
+      }
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["App", "Type", "Func", "Count", "Latest run"]) {
+        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const b of breakdown) {
+        const tr = document.createElement("tr");
+        if (b.type === "ERROR" || b.type === "WARN") tr.className = "row-" + b.type;
+        tr.appendChild(cell(b.app));
+        const ty = cell("");
+        const badge = document.createElement("span");
+        badge.className = "badge " + (TYPE_CLASS[b.type] || "INFO");
+        badge.textContent = b.type;
+        ty.appendChild(badge);
+        tr.appendChild(ty);
+        tr.appendChild(cell(b.func));
+        tr.appendChild(cell(b.count, "num"));
+        const runTd = document.createElement("td");
+        if (b.lastRunId) {
+          const a = document.createElement("a");
+          a.href = runHref(b.lastRunId, b.lastInsertedAt);
+          a.textContent = "view ›";
+          runTd.appendChild(a);
+        } else { runTd.textContent = "—"; }
+        tr.appendChild(runTd);
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      view.appendChild(table);
+    }
+
+    async function showSystem(systemId) {
+      const myReq = ++runReq;
+      hideAllViews();
+      const view = document.getElementById("system-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      connMessage(view, "Loading system…");
+      let res;
+      try { res = await fetch("/api/systems/" + encodeURIComponent(systemId)); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load this system."); return; }
+      if (myReq !== runReq) return;
+      if (res.status === 400) return connMessage(view, "Invalid system id.");
+      if (!res.ok) return connMessage(view, "Couldn't load this system.");
+      let data;
+      try { data = await res.json(); }
+      catch { if (myReq === runReq) connMessage(view, "Couldn't load this system."); return; }
+      if (myReq !== runReq) return;
+      renderSystem(view, data);
+    }
+
     function route() {
       const hash = location.hash.slice(1);
       if (hash.startsWith("run=")) {
@@ -1120,6 +1291,10 @@
         showConnectivity();
       } else if (hash === "acq-systems") {
         showAcqSystems();
+      } else if (hash === "systems") {
+        showSystems();
+      } else if (hash.startsWith("system=")) {
+        showSystem(decodeURIComponent(hash.slice("system=".length)));
       } else if (hash.startsWith("appruns=")) {
         showAppRuns(decodeURIComponent(hash.slice("appruns=".length)));
       } else {

@@ -27,6 +27,11 @@ direction is to **harden and future-proof** it:
 - make the grid itself stop misrepresenting single-bucket apps: per-APP recent-run
   health on the group header + a run-log status filter + a connectivity rollup badge
   (Phases 12–14, all read-only/additive)
+- deepen the relationship between the monitoring data and the apps it watches, as
+  read-only insight for a human (never write-back): pivot from per-app to
+  per-equipment-system correlation (Phase 17), then error-category trends (Phase 18),
+  an onboarding suite-health overview + legend (Phase 19), and an actionable
+  error→owner/action insights feed (Phase 20). Roadmap in `notes/`/the approved plan.
 
 Current decisions:
 
@@ -79,6 +84,7 @@ These are decided in future phases, not hidden inside unrelated edits.
 | 14 | `prompt_14_connectivity_polish.txt` | Completed | Connectivity rollup badge on the `data_acquisition` grid header (offline HHM/MMB counts, links to `#connectivity`) from an additive `rollup` field on `/api/connectivity`; + a refresh button on the connectivity view. No new query/grant. See PHASE_LOG. |
 | 15 | `prompt_15_acquisition_systems.txt` | Completed | Per-system acquisition-history view for `data_acquisition` (per-`system_id` runs/failed over a window + per-source hhm/mmb rollup) from `stats.acquisition_history` (BRIN-bounded, EXPLAIN-confirmed); routed `#acq-systems` view off the data_acquisition header. Expands `ops_dashboard_ro` with SELECT on schema `stats` — the third read outside `util` (fail-closed). Deploy needs the grant applied (superuser) + restart. See PHASE_LOG. |
 | 16 | `prompt_16_da_inline_runs.txt` | Completed | Inline expand the `data_acquisition` grid row to its last-12h distinct run_ids (lazy, capped newest 50, "see all" → run-log), reusing the Phase 11 endpoint. Frontend-only; no backend/grant/restart. See PHASE_LOG. |
+| 17 | `prompt_17_per_system_view.txt` | Completed | Per-equipment-system correlation view: `GET /api/systems` (cross-app per-`note.sme` warn/error rollup, worst-first) + `GET /api/systems/:id` (breakdown by `(app,type,func)` with latest run drill-down, joined to `alert.*` for the classified `error_category`). `#systems`/`#system=<id>` routed views + top-nav link; connectivity/acq system ids now link in. `warn_error_logs`-only (EXPLAIN-pruned), request-path (clamp 1..168h). No new grant (reads `util`+`alert`). Read-only insight, no write-back. See PHASE_LOG. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -104,6 +110,7 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 14 | `phase-14-connectivity-polish` |
 | 15 | `phase-15-acquisition-systems` |
 | 16 | `phase-16-da-inline-runs` |
+| 17 | `phase-17-per-system-view` |
 
 Check `git status --short` before creating or switching branches.
 

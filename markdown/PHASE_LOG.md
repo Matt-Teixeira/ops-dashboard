@@ -8,6 +8,174 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 17 — Per-System (Equipment) Correlation View
+
+Date:
+2026-07-01
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_17_per_system_view.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- Self-review against `markdown/REVIEW_CHECKLIST.md` (below). No external handoff this phase.
+
+## Goals
+
+- Pivot the dashboard from per-app to per-equipment-system: the same `note.sme` raises
+  issues across multiple apps (the pull in `data_acquisition`, the parse in `hhm_rpp_*`),
+  and only a cross-app view shows a system's whole story / root cause vs. downstream noise.
+- Do it read-only, as insight for a human — no write-back to the monitored apps.
+- Land the correlation backbone that Phases 18 (trends) and 20 (insights) will reuse.
+
+## Built
+
+- `db/queries.js`: `SYSTEMS_LATEST_SQL` + `systemsLatest(since, limit)` (per-`sme`
+  cross-app warn/error rollup, worst-first, LIMIT-capped) and `SYSTEM_DETAIL_SQL` +
+  `systemDetail(id, since)` (one system by `(app, type, func)` with the latest `run_id`
+  per group for drill-down). Both `warn_error_logs`-only, partition-pruned; the detail
+  `sme` is a bound `$1` param.
+- `lib/systems.js` (pure) + `test/systems.test.js`: `shapeSystems`, `summarize`
+  (incl. `crossApp` count), `shapeDetail`, `pickSystem` (reuses decorated connectivity
+  for the classified `error_category`), plus SQL-text guards.
+- `server.js`: `GET /api/systems` (clamp `SYSTEMS_WINDOW_HOURS`, 1..168) and
+  `GET /api/systems/:id` (id validated via `SYSTEM_ID_RE`; joins `alert.*` connectivity).
+- `public/index.html`: `#systems` list + `#system=<id>` detail routed views, a top-nav
+  "systems" link, and the connectivity/acquisition tables now link each system id into
+  the detail view. Introduced `hideAllViews()` to replace the per-function hide blocks
+  (7 views now) — a behavior-preserving cleanup that removes the stale-sibling risk.
+- Config: `SYSTEMS_WINDOW_HOURS` in `.env.example` + `markdown/ENVIRONMENT.md`.
+
+## Schema Facts Confirmed (live DB)
+
+- `util.app_run_logs.warn_error_logs` and `verbose_log` are `json` (NOT `jsonb`) → use
+  `json_array_elements` / `->`/`->>`, no jsonb operators.
+- System key is `note.sme` ONLY; `note.system.id` is never populated (0/166k in 7d) — no
+  fallback added.
+- `error_category` is NOT reliably in the run-log note (625/166k events; only value in 7d
+  was `hanging_exec`); the real enum lives in `alert.*` → detail joins connectivity for it,
+  and uses `func` as the in-log axis.
+- Cross-app correlation is real: 18 systems raised issues in >1 app in the 24h window.
+- Partition pruning confirmed via `EXPLAIN` on the final `SYSTEMS_LATEST_SQL` (Index Scan
+  on `app_run_logs_2026_06_inserted_at_idx`; no `verbose_log`).
+
+## Important Decisions
+
+### Correlate by `note.sme`, classify from `alert.*` (not the run-log note)
+
+Decision: pivot on `note.sme`; take `func` as the in-log grouping axis and the classified
+`error_category` from the `alert.*` connectivity rows.
+
+Reason: live verification showed `error_category` is essentially absent from the run-log
+note but present/curated in `alert.*` (already read by `/api/connectivity`).
+
+Tradeoff: the in-log breakdown groups by `func` (coarser than the ~40-category enum), but
+the detail view still surfaces the true category via the joined connectivity state.
+
+### Request-path direct, window clamped 1..168h
+
+Decision: serve both endpoints directly (no cache), default 24h, clamp max 168h.
+
+Reason: `warn_error_logs`-only (no `verbose_log` detoast); 24h ≈ 150ms (like acq/
+connectivity). 7d ≈ 2.2s is the slow ceiling, so the clamp keeps the worst case bounded.
+
+Tradeoff: very long windows are slower than the cached grid, but they are opt-in and
+bounded; no new write/summary surface introduced.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none new — reads `util` (granted) + `alert`
+  (granted Phase 10). No new grant, no `setup-readonly-role.sql` change, no deploy grant
+  step. No code path can write.
+- Query / partition-pruning impact: both queries filter `inserted_at > $`; EXPLAIN
+  confirms the monthly-partition index scan; no `verbose_log`.
+- Performance impact: request-path ~150ms at the 24h default; clamp bounds the worst case.
+- Security impact: `:id` validated (`/^[A-Za-z0-9_-]{1,64}$/`, 400 otherwise); `sme` bound
+  as a query param, never interpolated; DB errors surface as the shared sanitized 500.
+- Deployment impact: restart to pick up the new routes; no grant/schema/index change.
+- API / response-shape compatibility impact: additive only (two new endpoints + a new env
+  var); existing endpoints unchanged.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test        # 98 pass (7 new)
+docker exec -i ops-dashboard-app-1 node - < smoke.js           # ephemeral :18099 HTTP smoke
+docker exec -i ops-dashboard-app-1 node - < explain.js         # EXPLAIN partition prune
+```
+
+Results:
+
+- Passed: unit suite 98/98; live smoke; EXPLAIN partition-pruned; no `verbose_log`.
+- Failed: none.
+- Not run: multi-instance/durability (out of scope).
+
+Manual / smoke tests:
+
+- `GET /api/systems?windowHours=24` → 226 systems worst-first; summary `crossApp=18`.
+- `GET /api/systems/SME02524` (cross-app) → connectivity `OFFLINE / host_unreachable`
+  (HHM+MMB) alongside `data_acquisition` ERROR `execRsync` ×84 and downstream
+  `hhm_rpp_ge` WARN — a network root cause, not a parser bug (the intended payoff).
+- Invalid id → 400; `windowHours=99999` clamps to 168.
+
+## Review Notes
+
+Source: self-review against `markdown/REVIEW_CHECKLIST.md` + external Codex review against
+`notes/review_handoff_phase_17.md`.
+
+Critical issues:
+
+- None. Codex: **no findings**. It confirmed the SQL is window-bounded on `inserted_at`,
+  unnests only `warn_error_logs` (no `verbose_log`), keeps the system id bound as `$1`; the
+  `/api/systems/:id` path validates before querying; DB errors flow through the sanitized
+  shared handler; and `hideAllViews()` covers all routed views with the `runReq` guards
+  preserved.
+- Codex could not run the test suite (its environment lacked `node`/`npm`). Not a
+  finding — the suite was validated here via the container node runner (98/98).
+
+Accepted fixes:
+
+- None.
+
+Deferred findings:
+
+- The in-log breakdown axis is `func`, not the classified `error_category` (which is
+  sparse in the run log). Consistent classification in the run log would require changes
+  in the monitored apps — deliberately out of scope (read-only); Phase 18 surfaces the gap.
+
+## Problems Encountered
+
+- Problem: the approved plan assumed `error_category` (~40 categories) was richly present
+  in `warn_error_logs` and `note.system.id` was a valid key.
+  Resolution: live verification disproved both; redesigned to `note.sme` + `func` + an
+  `alert.*` join, and recorded the corrected facts in the prompt and this log.
+
+## Follow-Up Tasks
+
+- Phase 18 — error-category analytics & trends (sources classified categories from
+  `alert.*`, surfaces an "unclassified" bucket for the run-log/parser side).
+- Phase 20 — actionable insights (error → owner/action mapping over this correlation).
+
+## Commit Readiness
+
+- Requirements implemented: yes.
+- Read-only / least-privilege rules hold: yes (no new grant; no write path).
+- Time-windowed queries partition-pruned: yes (EXPLAIN-confirmed).
+- Schema assumptions confirmed live: yes.
+- Review findings addressed or deferred: yes.
+- Validation recorded: yes.
+- Ready to commit: yes (awaiting the developer's go — not committed).
+
+---
+
 # Phase 16 — data_acquisition Inline Run Expansion
 
 Date:

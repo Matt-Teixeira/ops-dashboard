@@ -11,6 +11,7 @@ const staleness = require("./lib/staleness");
 const connectivity = require("./lib/connectivity");
 const appRunsLib = require("./lib/app-runs");
 const acq = require("./lib/acq");
+const systemsLib = require("./lib/systems");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
@@ -19,6 +20,7 @@ const APP_RUNS_LIMIT = Number(process.env.APP_RUNS_LIMIT || 200);
 const APP_HEALTH_WINDOW_HOURS = Number(process.env.APP_HEALTH_WINDOW_HOURS || 24);
 const APP_HEALTH_WINDOW_MS = APP_HEALTH_WINDOW_HOURS * 60 * 60 * 1000;
 const ACQ_WINDOW_HOURS = Number(process.env.ACQ_WINDOW_HOURS || 24);
+const SYSTEMS_WINDOW_HOURS = Number(process.env.SYSTEMS_WINDOW_HOURS || 24);
 const GRID_REFRESH_MS = Number(process.env.GRID_REFRESH_MS || 120000);
 const SUMMARY_RETENTION_DAYS = Number(process.env.SUMMARY_RETENTION_DAYS || 30);
 const SUMMARY_OVERLAP_MS = Number(process.env.SUMMARY_OVERLAP_MS || 300000);
@@ -34,6 +36,10 @@ const SELF_LOG_INTERVAL_MS = Number(process.env.SELF_LOG_INTERVAL_MS || 300000);
 // Version-agnostic RFC-4122 uuid shape; rejects anything that would make the
 // run_id cast fail in Postgres.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Equipment system ids (note.sme) look like SME01234; accept the broader safe set of
+// id characters and reject anything odd before it reaches the (bound) query param.
+const SYSTEM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 // The job grid is served from an in-process incremental cache (lib/run-cache.js).
 // The underlying query detoasts large verbose_log JSON, so we keep it off the
@@ -232,6 +238,57 @@ function buildApp() {
         count: rows.length,
         bySource: acq.summarizeBySource(rows),
         systems: acq.shapeSystems(rows),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-system (equipment) correlation LIST (Phase 17): systems with recent warn/error
+  // events rolled up across ALL apps, worst-first, so an operator sees which equipment is
+  // unhealthy and whether the issue spans apps (a root-cause signal). warn_error_logs-only
+  // (no verbose_log detoast), partition-pruned; served direct like connectivity/acq.
+  app.get("/api/systems", async (req, res, next) => {
+    try {
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, 168);
+      const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
+      const rows = await queries.systemsLatest(since, 500);
+      res.json({
+        windowHours,
+        asOf: new Date().toISOString(),
+        count: rows.length,
+        summary: systemsLib.summarize(rows),
+        systems: systemsLib.shapeSystems(rows),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Per-system correlation DETAIL (Phase 17): one system's warn/error events broken down
+  // by (app, type, func) over the window, joined with its classified connectivity state
+  // from alert.* (the run-log note doesn't reliably carry error_category). Each breakdown
+  // line carries the latest run_id for a drill-down link. Validate the id before it
+  // reaches the (bound) query param.
+  app.get("/api/systems/:id", async (req, res, next) => {
+    const systemId = req.params.id; // express decodes %xx
+    if (!SYSTEM_ID_RE.test(systemId)) {
+      return res.status(400).json({ error: "invalid system id" });
+    }
+    try {
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, 168);
+      const now = new Date();
+      const since = new Date(now.getTime() - windowHours * 60 * 60 * 1000).toISOString();
+      const [rows, connRows] = await Promise.all([
+        queries.systemDetail(systemId, since),
+        queries.connectivity(),
+      ]);
+      res.json({
+        systemId,
+        windowHours,
+        asOf: now.toISOString(),
+        connectivity: systemsLib.pickSystem(connectivity.decorate(connRows, now), systemId),
+        breakdown: systemsLib.shapeDetail(rows),
       });
     } catch (err) {
       next(err);
