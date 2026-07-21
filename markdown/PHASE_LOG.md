@@ -27,6 +27,9 @@ Review Artifacts:
 - Review handoff: `notes/review_handoff_phase_19.md` — the Codex briefing, scoped to
   the whole unreviewed branch (Phases 17–19). **Codex result: 5 findings (1 high /
   3 medium / 1 low), all accepted and fixed same-phase — see Review Notes.**
+- Fix-round handoff: `notes/review_handoff_phase_19_fixes.md` — delta review of the
+  fix commit `e1e676c` (per-finding verdicts + fix-introduced risks).
+  **Re-review result: pending.**
 - Producer contract: `/opt/apps/incident-engine/notes/ops_dashboard_integration_brief.md`
 - Schema-owner review: accepted/closed out (see Review Notes below)
 
