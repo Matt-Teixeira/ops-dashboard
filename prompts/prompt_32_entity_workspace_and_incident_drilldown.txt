@@ -22,6 +22,12 @@ Entry decision gate (mandatory before implementation):
 - If the cards plus existing detail routes are sufficient, mark Phase 32 Deferred with
   the evidence and stop. Deferral is a successful product decision, not an incomplete
   implementation.
+- Gate status (updated 2026-07-24): SATISFIED. The independent post-Phase-31 review
+  (`notes/review_phase_31.md`) recorded the required evidence via the representative
+  SME16380 journey: repeated cross-view navigation, lost SME context on `#entity=`
+  (which reuses the System signals controller), and a raw incident list that cannot
+  scope by entity. Do not re-run the gate; re-verify only if the dashboard materially
+  changes before implementation begins.
 
 Prerequisites:
 - Phase 30 `/api/entities` is complete/reconciled, Phase 31 has made Entities the
@@ -48,7 +54,8 @@ Implementation scope:
      confusing that value with the global rollup or current page length.
    - Preserve 100-row keyset pages, duplicate-safe load more, cursor fail-closed
      validation, and generic errors. Do not add an unbounded “all incidents for entity”
-     query merely because the current live maximum is 12.
+     query merely because the live maximum was 12 when measured on 2026-07-21; the data
+     has aged since, so re-sample per-entity cardinality at the decision gate.
 
 2. Add one entity-context endpoint by composing existing bounded reads
    - Add `GET /api/entities/:id?windowHours=<n>` with the existing strict safe-id
@@ -116,11 +123,16 @@ Implementation scope:
      Acquisition by system, and System signals to `#entity=<id>` with accurate safe
      return tokens.
    - Keep all inbound `#system=` bookmarks and `system:<id>` return tokens working.
-     Add `entity:<id>` to `safeFrom`/`fromHref` and ensure invalid ids cannot create a
-     route or DOM injection.
-   - Entity and legacy-system detail routes own the Entities nav item. The old
-     `#systems` list remains available as “System signals”; do not delete its API or
-     route because it answers the distinct recent-window question.
+     Already done in Phase 31 (verify, don't re-add): `entity:<id>` is accepted by
+     `safeFrom`/`fromHref`, `#entity=` parses with safe-id validation, and the entity
+     route owns the Entities nav item (`public/routes.js`). Ensure invalid ids still
+     cannot create a route or DOM injection.
+   - Remaining canonicalization work is the link call sites: Entities cards already
+     emit `#entity=...&from=entities`, while connectivity, acquisition, raw incident
+     list/detail, and system signals all route through the shared `systemHref` helper
+     in `public/index.html` — switch that helper (and its `from` tokens) to `#entity=`.
+   - The old `#systems` list remains available as “System signals”; do not delete its
+     API or route because it answers the distinct recent-window question.
    - Incident-detail returns to the exact entity workspace when opened there, raw
      incident list when opened there, and Entities default only when no safe origin is
      present.
