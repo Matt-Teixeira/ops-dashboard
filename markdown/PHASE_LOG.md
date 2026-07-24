@@ -12,11 +12,11 @@ history so the log is complete; they have no `prompts/` file.
 
 Date: 2026-07-24
 
-Status: Completed (pending independent review before merge)
+Status: Completed (independently reviewed across three rounds; merged to main)
 
 Prompt: `prompts/prompt_32_entity_workspace_and_incident_drilldown.txt`
 
-Git Commit: Pending
+Git Commit: 8d74091 (merged to main; series 3563ccd → 8d74091)
 
 Review Artifacts:
 
