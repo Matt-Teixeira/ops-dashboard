@@ -1,0 +1,80 @@
+Phase 27 - Native Table & Control Accessibility
+
+Phase goal:
+Preserve native table semantics while keeping all sorting, grouping, filtering, and
+navigation keyboard-operable. Replace ARIA role overrides and disabled-as-selected
+patterns with real controls whose name, state, focus, and relationships are exposed.
+
+Background (from the 2026-07-21 review):
+- Group <tr> elements are assigned role=button; sortable <th> elements are also
+  assigned role=button, which overrides their native row/column-header semantics.
+  aria-sort then sits on an element whose declared role is button.
+- Error-feed synthetic row links are removed in Phase 22; audit all remaining row-wide
+  click handlers for the same problem.
+- Run-log filters indicate selection by disabling the selected button. Grid chips and
+  incident tiles use a white active ring that is nearly invisible in light mode.
+- Tables have nearby visual headings but no captions/aria-labelledby connections or
+  explicit column scope. The ? CADENCE explanation is title-only and not reliably
+  available to touch, keyboard, or screen-reader users.
+
+Implementation scope:
+- Sort headers: keep <th scope="col" aria-sort=...> semantics and place a real button
+  inside the header for activation. The button has an explicit accessible name and
+  visible direction indicator; Enter/Space behavior comes from native button semantics.
+- Group rows: keep a valid table row/cell structure and place a real disclosure button
+  in the group header cell. Connect it to the controlled row group with aria-expanded
+  and, where practical, aria-controls; do not assign button role to <tr>.
+- Navigation: every navigable item is an <a href>. Remove residual role=link rows and
+  row click handlers that block normal link behavior. Make row click targets generous
+  through CSS/layout rather than invalid semantics.
+- Filters: selected buttons remain enabled, use aria-pressed or the correct native
+  control, and receive a high-contrast focus/selected style in light and dark mode.
+  Loading disablement is separate from selection.
+- Tables: provide caption or aria-labelledby for every data table, scope column headers,
+  use honest empty states, and retain DOM reading order. Avoid unnecessary ARIA where
+  native HTML already expresses the relationship.
+- Make ? CADENCE help available through visible/focusable explanatory text or an
+  accessible disclosure, not title alone. Preserve the honesty marker itself.
+- Add a consistent :focus-visible treatment for links, buttons, inputs, selects, and
+  disclosure controls. Loading/error updates that replace view content should use a
+  restrained appropriate live region without announcing entire tables.
+
+Explicit non-goals:
+- No API/query/grant changes, visual redesign, or new accessibility framework runtime.
+- Do not add ARIA roles merely to satisfy a checker; prefer native HTML.
+- No mobile layout work beyond ensuring focus is not clipped; Phase 28 owns responsive
+  containment.
+- Do not remove keyboard functionality that currently exists.
+
+Expected files / layers:
+- public/index.html and focused DOM/helper tests if the current test setup can support
+  them without adding a runtime dependency. Document any manual-only checks.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Keyboard-only smoke: route navigation, filters, sorting, group disclosure,
+  show-more/expand controls, links, and focus return after re-render.
+- Browser accessibility-tree inspection for representative grid/list/detail tables;
+  optionally run an external audit tool without adding it to production dependencies.
+- Light/dark focus and selected-state visual check.
+
+Read-only / least-privilege constraints:
+- Frontend-only; no DB, API, or credential changes.
+
+Schema assumptions to confirm live:
+- None. Inventory every rendered table/control and its dynamic rebuild path.
+
+Re-evaluation evidence (2026-07-21, after Phase 26):
+- Nine data tables remain (two static dashboard tables and seven dynamic route
+  tables). All dynamic tables share the same header construction pattern and can use
+  one caption/scope helper without changing data behavior.
+- Residual semantic overrides are confined to sortable grid headers and group rows;
+  Phase 22 already removed row-link simulation. Run-log selected filters are the only
+  disabled-as-selected controls. `? CADENCE` remains title-only on row badges.
+
+Review questions:
+- Do tables remain tables in the accessibility tree, with named columns and captions?
+- Are all actions real native controls/links with visible focus and state?
+- Is aria-sort on the column header while activation lives in its child button?
+- Can selected filters be activated again to clear them, rather than being disabled?
+- Is explanatory help reachable without hover or a mouse?

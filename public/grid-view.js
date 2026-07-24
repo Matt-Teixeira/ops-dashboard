@@ -22,6 +22,15 @@
   // SUCCESS; INFO is included for completeness (grid status is only the first three).
   const STATUS_RANK = { ERROR: 0, WARN: 1, SUCCESS: 2, INFO: 3 };
   const UNKNOWN_RANK = 99; // any unexpected status sorts last
+  const SORT_KEYS = ["app", "job", "status", "lastRun", "duration", "issues"];
+
+  function normalizeSortKey(value) {
+    return SORT_KEYS.includes(value) ? value : "lastRun";
+  }
+
+  function chipDisabled(count, active) {
+    return Number(count) === 0 && !active;
+  }
 
   /** Number, or null for nullish/non-numeric (so it can be ordered nulls-last). */
   function num(x) {
@@ -46,7 +55,6 @@
       const t = Date.parse(j.lastRun);
       return Number.isNaN(t) ? null : t;
     }
-    if (key === "age") return num(j.ageMs);
     if (key === "duration") return num(j.durationMs);
     if (key === "issues") return num(j.issueCount);
     return null;
@@ -70,7 +78,7 @@
 
   /**
    * Return a NEW array of jobs sorted by `key` ("app"|"job"|"status"|"lastRun"|
-   * "age"|"duration"|"issues") in `dir` ("asc"|"desc"). Stable: ties fall back to
+   * "duration"|"issues") in `dir` ("asc"|"desc"). Stable: ties fall back to
    * app then job. Never mutates the input; an unknown key just yields the
    * app/job ordering.
    */
@@ -165,11 +173,11 @@
    */
   function healthLabel(h, windowHours) {
     if (!h || !Number.isFinite(h.runs) || h.runs <= 0) return "";
-    const prefix = Number.isFinite(windowHours) && windowHours > 0 ? windowHours + "h: " : "";
+    const prefix = Number.isFinite(windowHours) && windowHours > 0 ? windowHours + "h health: " : "health: ";
     let s = prefix + (h.errored || 0) + "/" + h.runs + " err";
     if (h.warned) s += " · " + h.warned + " warn";
     return s;
   }
 
-  return { STATUS_RANK, sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel };
+  return { STATUS_RANK, SORT_KEYS, normalizeSortKey, chipDisabled, sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel };
 });

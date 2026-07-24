@@ -13,9 +13,9 @@ log table `util.app_run_logs` and renders:
 - a **job grid** — latest run per `(app, job)`: status, duration, age, staleness
 - an **error feed** — recent WARN/ERROR events across the suite
 - a **run drill-down** — the full event timeline for one run
-- a **connectivity panel** — latest per-equipment connectivity state (which
-  systems are offline) from the `alert.*` tables, surfacing per-system detail the
-  `data_acquisition/(default)` job bucket hides
+- a **connectivity panel** — last per-equipment acquisition result plus an evidenced
+  freshness/current-state classification from the `alert.*` snapshot tables,
+  surfacing per-system detail the `data_acquisition/(default)` job bucket hides
 - an **incidents view** (Phase 19) — incident-engine's classified, severity-assessed
   rollup of the error firehose (one row per distinct problem × equipment), read from
   the `incidents` schema that the separate writer app `/opt/apps/incident-engine`
@@ -56,7 +56,9 @@ differs from `docs/logging-schema.md`, fix the doc in the same phase.
 
 A **second, read-only contract** (added Phase 10) backs the connectivity panel:
 `alert.offline_hhm_conn` and `alert.offline_mmb_conn`. Each is **upserted to one
-row per `system_id`** (PK) holding that equipment's latest connectivity state — so,
+retained row per `system_id`** (PK) holding that equipment's last recorded result;
+rows are not pruned when a system leaves the active acquisition set, so currentness
+must be derived from `inserted_at` freshness rather than the historical boolean — so,
 unlike `app_run_logs`, they are tiny, **not partitioned**, and carry **no json blob
 to detoast**. A full scan is sub-millisecond, so the connectivity query runs on the
 request path with no cache. They are written by `data_acquisition`; the dashboard

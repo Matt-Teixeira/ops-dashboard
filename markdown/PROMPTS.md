@@ -36,6 +36,23 @@ direction is to **harden and future-proof** it:
   classification/assessment upstream and publishes the `incidents` schema; this
   dashboard displays it (read-only, fail-closed grant). An onboarding suite-health
   overview + legend remains open roadmap.
+- execute the post-Phase-19 UX hardening sequence established by the independent
+  2026-07-21 review: truthful connectivity freshness, active-first incident triage,
+  progressive disclosure for dense feeds, bounded large-list rendering/pagination,
+  route-aware chrome, explicit status/time semantics, native table accessibility,
+  and responsive containment/polish (Phases 20-28). These stay dependency-free and
+  preserve the read-only architecture.
+- make incidents-by-entity the primary information architecture (Phases 30-31): add the
+  smallest complete server-side SME incident aggregate, then make responsive SME cards
+  the default route while preserving Jobs and the raw incident list. Global and other
+  non-SME incidents remain explicitly reconciled and discoverable. A combined entity
+  workspace across incidents, connectivity, and recent signals is Phase 32, but it is
+  conditional on post-card UX evidence rather than an automatic implementation step.
+- the independent post-Phase-31 review found concrete card→detail investigation
+  friction: the temporary entity destination loses the card's incident context, while
+  the global raw list cannot filter by entity. Phase 32's entry gate is therefore
+  satisfied and proceeding is recommended in a separately authorized phase; Phase 32
+  was not implemented as part of Phases 30-31.
 
 Current decisions:
 
@@ -62,6 +79,8 @@ Not decided yet:
 - per-(app, job) recent-run health on every grid row — deferred: deriving the job
   per run detoasts `verbose_log` (data_acquisition's is large); Phase 12 does the
   cheap per-APP aggregate instead
+- retired-equipment inventory membership remains unavailable; Phase 20 therefore
+  keeps old connectivity rows visible as stale rather than treating them as current
 
 These are decided in future phases, not hidden inside unrelated edits.
 
@@ -92,6 +111,19 @@ These are decided in future phases, not hidden inside unrelated edits.
 
 | 18 | — (ad-hoc user request; no prompt file) | Completed | data_acquisition run-log **job type**: the 12h-runs dropdown labels each run with its real job (`hhm/CT`, `mmb #3`, `ip_reset`…) from the `runJob` event's `run_group`/`modality`/`schedule` — a deliberate, bounded Performance-Rule exception (LATERAL after ORDER BY+LIMIT, ≤50 rows, data_acquisition endpoint only, ~10ms). Additive `jobType` API field. See PHASE_LOG. |
 | 19 | `prompt_19_incidents_view.txt` | Completed | **Incidents view** over incident-engine's `incidents` schema (the fourth read surface, fail-closed): `GET /api/incidents` (severity×state tile rollup + filterable list) + `GET /api/incidents/:id` (assessment reasons/action + raw-event drill-down via `(fingerprint, entity)`). `#incidents`/`#incident=<id>` views + nav; entity links to `#system=`. `category_source='oracle'` renders as a hint-badge, never a diagnosis. Request-path (no detoast); supersedes old roadmap 18/20. See PHASE_LOG. |
+| 20 | `prompt_20_connectivity_freshness_truth.txt` | Completed | Raw last result is preserved while a producer-backed 45-minute checked-at budget derives current ONLINE/OFFLINE/UNKNOWN versus STALE. Rollups count current failures separately from 339 retained historical rows. See PHASE_LOG. |
+| 21 | `prompt_21_incident_triage_controls.txt` | Completed | Producer-confirmed active states now sort before resolved/suppressed history; one reconciled rollup adds 18 count-backed category facets, and category/severity/state filters compose with clear-all and honest zero states. See PHASE_LOG. |
+| 22 | `prompt_22_dense_feed_disclosure.txt` | Completed | Both dense feeds now paint 25 bounded previews first, disclose full text and 25-row increments accessibly, keep shown/fetched/occurrence counts distinct, use native run links, and distinguish healthy empty from failure. See PHASE_LOG. |
+| 23 | `prompt_23_large_list_controls.txt` | Completed | Sticky headers, order-preserving scoped filters, 50-row progressive rendering, honest response/loaded counts, and explicit reset paths now cover connectivity, systems, acquisition, and loaded run pages. See PHASE_LOG. |
+| 24 | `prompt_24_incident_list_scaling.txt` | Completed | The incident list is an eight-field 100-row lean page with a validated opaque activity/severity/time/id cursor; load-more is deduplicated, filter-safe, and explicit about loaded versus global total. See PHASE_LOG. |
+| 25 | `prompt_25_route_aware_chrome.txt` | Completed | A nine-route registry now owns accurate title/source/meta/active nav/refresh, and validated return tokens provide deterministic breadcrumbs without breaking legacy deep links or run hints. See PHASE_LOG. |
+| 26 | `prompt_26_status_time_semantics.txt` | Completed | Latest status and 24h health are explicitly scoped, relative `<time>` cells retain exact timestamps through year-scale ages, and fixed badge/edge-marker policies replace warning-color walls. See PHASE_LOG. |
+| 27 | `prompt_27_table_accessibility.txt` | Completed | Native scoped headers/rows now contain real sort/disclosure controls, all nine tables are named, selected filters remain operable, focus is visible, and cadence/loading help is reachable. See PHASE_LOG. |
+| 28 | `prompt_28_responsive_polish.txt` | Completed | All nine tables now contain overflow locally with visible focus, narrow controls wrap without page overflow, compact UUID labels preserve exact link/accessibility values, promoted note fields are deduplicated safely, and an adaptive repo-native favicon identifies the app. See PHASE_LOG. |
+| 29 | `prompt_29_ux_review_fix_round.txt` | Completed | Closed the reviewed refresh/chrome races, sticky containment, selected/zero filters, note fidelity, cursor-400 validation, keyboard disclosure/focus, and UUID-copy gaps. 146 tests plus reproducible nine-route/browser/API gates pass; independent fix-delta review remains the commit gate. See PHASE_LOG. |
+| 30 | `prompt_30_incident_entity_summary_contract.txt` | Completed | Complete `GET /api/entities`: 229 SME summaries plus explicit global/other reconciliation from one small read-only incident aggregate; exact counts, occurrence strings, state/severity axes, apps, categories, and provenance. See PHASE_LOG. |
+| 31 | `prompt_31_entity_first_incident_dashboard.txt` | Completed | Entities is the default/`#incidents` alias with complete progressive SME cards; Jobs, raw Incident list, detail views, accessibility, races, and legacy routes are preserved. See PHASE_LOG. |
+| 32 | `prompt_32_entity_workspace_and_incident_drilldown.txt` | Conditional — proceed recommended | Post-Phase-31 review records concrete lost incident context and unscoped raw-list navigation. Implement only under separate authorization; not implemented in this goal. |
 
 Phases 1–3 were completed before this prompt system existed; they are
 reconstructed in `PHASE_LOG.md` as durable memory and have no prompt file.
@@ -122,6 +154,19 @@ One branch per phase unless the developer explicitly chooses otherwise.
 | 17 | `phase-17-per-system-view` |
 | 18 | `phase-17-per-system-view` (ad-hoc; shares the branch) |
 | 19 | `phase-19-incidents-view` |
+| 20 | `phase-20-connectivity-freshness` |
+| 21 | `phase-21-incident-triage` |
+| 22 | `phase-22-dense-feed-disclosure` |
+| 23 | `phase-23-large-list-controls` |
+| 24 | `phase-24-incident-list-scaling` |
+| 25 | `phase-25-route-aware-chrome` |
+| 26 | `phase-26-status-time-semantics` |
+| 27 | `phase-27-table-accessibility` |
+| 28 | `phase-28-responsive-polish` |
+| 29 | `phase-29-ux-review-fixes` |
+| 30 | `phase-30-incident-entity-summary` |
+| 31 | `phase-31-entity-first-dashboard` |
+| 32 | `phase-32-entity-workspace` |
 
 Check `git status --short` before creating or switching branches.
 

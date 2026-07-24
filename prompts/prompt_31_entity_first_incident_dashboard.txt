@@ -1,0 +1,212 @@
+Phase 31 - Entity-First Incident Dashboard & Card Experience
+
+Phase goal:
+Make the incident-by-entity experience the app's main dashboard: the bare hash and
+`#incidents` show a responsive, progressively rendered grid of SME cards driven by the
+minimal, complete Phase 30 incident aggregate. Move the existing job grid and raw
+incident table to explicit, preserved routes. This is the principal UI/UX deliverable;
+it changes information architecture and presentation without adding cross-source
+entity data.
+
+Prerequisite:
+- Phase 30 is implemented, reviewed, and its `GET /api/entities` totals reconcile to
+  the full incident set. Do not implement this UI by fetching all `/api/incidents`
+  cursor pages or grouping a partial page in the browser.
+- Phase 29 remains the UX baseline. Preserve route-generation ownership, refresh race
+  safety, sticky table containment, selected-filter visibility, focus restoration,
+  native controls, lossless note rendering, and responsive behavior.
+
+Implementation scope:
+
+1. Establish the new route and navigation hierarchy
+   - The bare hash (`#`/empty hash) is canonical “Entities”: the incident entity-card
+     dashboard backed by `/api/entities`.
+   - Keep `#incidents` as a supported alias to the same Entities view so the existing
+     nav/bookmark enters the new incident-focused dashboard.
+   - Move the existing raw incident tiles/filters/table, unchanged in data semantics,
+     to `#incident-list` with the label “Incident list.”
+   - Move the existing job grid/error feed dashboard to `#jobs` with the label “Jobs.”
+     Internal function/element renaming is optional; avoid a risky mass rename solely
+     to replace the word dashboard in code.
+   - Add canonical `#entity=<safe-id>` parsing now. In this phase it may reuse the
+     existing `#system=<id>` controller and `/api/systems/:id` presentation so every
+     card has a working drill-down. Phase 32 will enrich it with incidents.
+   - Preserve `#system=<id>` as a deep-link alias; do not force a hash redirect or break
+     existing connectivity/acquisition/review links.
+   - Update the route registry, source labels, titles, parent/nav ownership, refresh
+     handlers, and safe return-token grammar for `entities`, `jobs`, `incident-list`,
+     and `entity:<id>`.
+   - Preserve legacy return intent: old `from=dashboard` resolves to `#jobs`, and old
+     `from=incidents` resolves to `#incident-list`. New links use `from=entities`,
+     `from=jobs`, or `from=incident-list` explicitly. Unsafe/unknown values still fall
+     back deterministically.
+   - Primary navigation order/labels should make the hierarchy obvious without a new
+     nav component: Entities, Incident list, Jobs, Connectivity, and System signals
+     (the existing `#systems` view). Controls wrap at narrow widths.
+
+2. Add pure entity-view transformations
+   - Prefer a new browser/Node-compatible `public/entity-view.js` plus
+     `test/entity-view.test.js` for pure filter, summary, sort, display-slice, and
+     compact metadata helpers. Keep DOM/network work in the controller.
+   - Treat the Phase 30 response as complete. Never recompute global incident truth
+     from the currently rendered 24-card slice.
+   - Default ordering follows the API's triage order; offer only user-facing sorts that
+     are operationally meaningful and testable (recommended: priority, latest seen,
+     entity id). Sorting must be stable with entity id as the final tie-break.
+   - Store filter/sort preferences under a new versioned key. Bad/obsolete persisted
+     values fall back safely. A selected option whose current count becomes zero stays
+     operable so the user can clear it.
+
+3. Build the entity control and summary surface
+   - Add a clear heading and concise scope copy: one card is one SME entity; incident
+     counts are distinct problems; occurrences are repeated observed events.
+   - Show a compact reconciled summary from the API: SME entities, entities with active
+     work, active incidents, total incidents, and non-SME incidents. Do not call active
+     counts “affected systems” or occurrences “incidents.”
+   - Controls:
+       - text search by exact/partial entity id;
+       - activity: Active (default) / All;
+       - severity and category filters based on the entity's incident metadata;
+       - priority/latest/entity sort and one explicit reset.
+   - Filter semantics must be stated and tested: in Active mode, severity/category
+     match active incidents only; in All mode they may match any incident.
+   - Count labels describe matched entities, not loaded/rendered cards. Healthy empty,
+     filtered-empty, API failure, and warm-up/loading states are distinct and announced
+     through a persistent polite status region.
+
+4. Render semantic, operationally useful SME cards
+   - Render the initial 24 matching entities and disclose 24 more per native “show more”
+     button. Filtering/sorting resets the display slice predictably. Preserve focus
+     after expansion and never rebuild the control shell on each action.
+   - Use a responsive CSS grid (one column on phone, naturally increasing columns with
+     space) and semantic list/article structure. The entity id is a real link to
+     `#entity=<id>&from=entities`; do not make the entire card a click handler.
+   - Each card must expose, with text labels and not color alone:
+       - SME id;
+       - active incident count and total incident count;
+       - worst active severity, or “no active incidents”;
+       - latest incident observation as relative `<time>` with exact timestamp;
+       - oldest active observation when active work exists;
+       - occurrence count, explicitly labeled “occurrences”;
+       - top three categories by the Phase 30 order plus `+N` for the remainder;
+       - app count and up to two app names plus `+N`.
+   - Preserve category provenance on every displayed category. Oracle-only categories
+     use the established dashed/hint treatment and explanation. A category with mixed
+     sources must disclose that it includes oracle evidence without styling the whole
+     category as a definitive diagnosis.
+   - Use narrow severity edges/badges and existing design tokens. Avoid full red card
+     backgrounds, a novelty design system, excessive shadows, or dense table-in-card
+     layouts. Resolved-only entities should be visually quieter but fully available in
+     All mode.
+
+5. Keep non-SME and raw records discoverable
+   - Render a visible reconciled notice/card from `summary.nonSme` and
+     `nonSmeEntities`, naming current producer groups such as `__global__`/other rather
+     than pretending they are SME equipment.
+   - Link that surface to `#incident-list`. Do not drop, relabel, auto-assign, or mix
+     non-SME groups into the SME card grid.
+   - The raw incident list retains its Phase 21/24 filters, complete rollup wording,
+     keyset pagination, provenance, focus, sticky, and responsive behavior.
+
+6. Route-aware data ownership and refresh
+   - The Entities refresh handler fetches `/api/entities`, atomically replaces its
+     cached response, reapplies current filters, and updates only Entities-owned DOM and
+     chrome when its request generation is still current.
+   - Slow success/error/503 completions from Jobs or any other route must not repaint
+     Entities, and a slow Entities request must not repaint another route.
+   - The global refresh button always returns to enabled “refresh” state after
+     navigation, as fixed in Phase 29. Maintain at most one retry/request chain.
+   - It is acceptable for the Jobs grid cache to warm in the background, but it cannot
+     own title/source/meta/body outside `#jobs`.
+
+Expected files / layers:
+- `public/entity-view.js` (new) and `test/entity-view.test.js` (new) for pure behavior.
+- `public/routes.js`, `test/routes.test.js` for the expanded route/return contract.
+- `public/index.html` for route sections, navigation, controller, semantic cards, CSS,
+  status, filters, progressive rendering, and moved existing views.
+- `markdown/PROMPTS.md` and `markdown/PHASE_LOG.md` when implementing/logging.
+- No DB/query/server/grant/env/dependency file is expected.
+
+Explicit non-goals:
+- No backend regrouping or response-shape changes; Phase 30 owns `/api/entities`.
+- No full entity workspace, incident-by-entity API filter, connectivity merge, or
+  recent-signal correlation. Phase 32 may own those only if it passes its post-Phase-31
+  evidence gate.
+- No removal of Jobs, Connectivity, System signals, raw incident list, incident detail,
+  run drill-down, or any legacy deep link.
+- No incident-engine changes, write-back/acknowledgement, notifications, auth,
+  framework, bundler, frontend dependency, DB/schema/grant/cache change, or new icon set.
+- No virtual-scroll library. Progressive DOM rendering is sufficient for the verified
+  ~229 cards while the API response remains complete.
+- No decorative charts that restate counts without aiding entity triage.
+
+Read-only / least-privilege constraints:
+- This phase is frontend-only and calls existing GET endpoints. Introduce no mutation,
+  write control, DDL, role, token, or secret handling.
+- Producer strings enter the DOM via `textContent`/safe attribute setters. Do not use
+  `innerHTML` for entity, category, app, state, or source values.
+
+Schema/data assumptions to confirm before implementation:
+- Recheck the Phase 30 response shape and current cardinality; do not code against the
+  illustrative snapshot values in its prompt.
+- Identify representative entities with: many active incidents, resolved-only work,
+  multiple apps/categories, oracle or mixed provenance, and a non-SME group.
+- Confirm the exact existing #system detail behavior before using it as the temporary
+  #entity renderer; do not duplicate that controller.
+
+Required unit validation:
+- Route parse/title/source/nav/return behavior for bare hash, `#incidents`,
+  `#incident-list`, `#jobs`, `#entity=`, legacy `#system=`, and all prior routes.
+- Legacy/new return tokens, encoded safe ids, invalid values, and fallback behavior.
+- Entity filtering in Active/All modes, severity/category scope, stable sorting,
+  persisted-state normalization, count summaries, display slices, and show-more
+  boundaries.
+- Category/source labels and compact metadata helpers preserve oracle/mixed provenance,
+  exact times, large decimal occurrence strings, missing arrays, and no-record state.
+
+Required browser/integration validation:
+- Use an isolated worktree/app on port 18080. Do not restart port 8080.
+- At 390x844, 768x900, and 1440x900 (light/dark): no body overflow, readable cards,
+  wrapped nav/controls, visible focus, no clipped metadata, and no horizontal card
+  scrolling. Save desktop/mobile evidence.
+- Bare hash and `#incidents` render the same entity dataset and correct route chrome;
+  `#jobs` renders the prior job grid/feed; `#incident-list` renders the prior incident
+  table/filters. Verify legacy bookmarks and return paths.
+- Reconcile displayed summary counts with `/api/entities`; changing the 24-card DOM
+  slice must not change global/matched totals.
+- Exercise every filter by keyboard, clear zero-result/zero-count selected filters,
+  expand twice with focus preserved, open an entity link, and return deterministically.
+- Inspect cards representing multi-app/category, oracle/mixed provenance,
+  resolved-only, and non-SME data.
+- Delay/fail Entities and Jobs fetches across rapid navigation; verify no stale body or
+  chrome paint and the refresh control remains usable.
+- Run all route families and assert zero console/page errors and accurate source/title/
+  nav/meta ownership.
+
+Validation commands:
+- `docker run --rm -v "$PWD":/w -w /w node:lts node --test`
+- Compile all `public/*.js` and the inline `public/index.html` script in `node:lts`.
+- `git diff --check` and `git status --short`.
+- Playwright/browser validation against the disposable port-18080 app at the required
+  viewports and schemes.
+
+Documentation / completion gate:
+- Add a Phase 31 entry only after the new default route, preserved old routes, card
+  semantics, browser gates, and tests pass. Record before/after route mapping and the
+  exact card/filter semantics.
+- Mark Phase 31 Completed only after an independent UX review confirms the hierarchy
+  is genuinely entity-first, non-SME incidents remain discoverable, and the cards are
+  usable rather than merely a table restyled as rectangles.
+
+Review questions:
+- Is the bare route unmistakably an incident-by-entity operational dashboard, while
+  Jobs and the complete raw incident list remain one deterministic route away?
+- Can any count be mistaken for a rendered-card count, occurrence count, or a different
+  activity scope?
+- Do cards help prioritize an SME without becoming dense mini-tables or severity-color
+  walls?
+- Is category provenance truthful in compact form?
+- Can keyboard/mobile users search, filter, clear, show more, enter an entity, and
+  return without focus loss or page overflow?
+- Do every legacy route/return token and every late-request ownership guarantee still
+  hold after changing the default route?

@@ -1,0 +1,81 @@
+Phase 25 - Route-Aware Navigation, Context & Refresh
+
+Phase goal:
+Make every hash-routed view identify itself, its source, and its navigation context.
+The global header must never show hidden dashboard state or refresh the wrong view,
+and detail views must offer a reliable in-app return path.
+
+Background (from the 2026-07-21 UX review):
+- #meta is populated only by the job grid and persists on other views, so text such
+  as "showing 12" can appear above a 528-row Incidents view.
+- The global refresh button always calls dashboard refresh; most subpages therefore
+  appear to refresh while only hidden dashboard data changes.
+- The fixed subtitle says the app is a view of util.app_run_logs even on alert.*,
+  stats.*, and incidents.* routes.
+- Navigation omits an explicit dashboard link and active state; document.title stays
+  "ops-dashboard"; generic backLink() always targets # even when the user arrived
+  from connectivity, systems, incidents, an app run log, or another detail view.
+
+Implementation scope:
+- Define one route metadata registry/helper: route id, display title, document title,
+  authoritative data-source copy, nav item, refresh handler, and safe fallback parent.
+  route() applies chrome synchronously before/while fetching view data.
+- Add an explicit Dashboard nav link and aria-current active state for dashboard,
+  connectivity, systems, and incidents. Keep secondary views represented by a parent
+  nav item/breadcrumb rather than overcrowding the top nav.
+- Replace job-grid-owned global meta with route-owned context. Grid summary stays on
+  the dashboard; every subview owns its count/window/as-of copy. The global data-source
+  label must name util.app_run_logs, alert.*, stats.acquisition_history, or
+  incident-engine/incidents.* accurately for the current route.
+- Make the global refresh action route-aware. It refreshes the visible route, disables
+  or reports loading while in flight, and cannot render a stale route response. Do not
+  duplicate a second refresh button on views that already have one; converge on one
+  clear affordance.
+- Set document.title for list and detail routes, including stable identifiers where
+  useful (app, system, run, incident id).
+- Replace generic back links with explicit breadcrumbs/return links. For multi-origin
+  detail routes, carry a validated `from` value in generated hash links (or an equally
+  deterministic app-owned mechanism) with a safe in-app fallback. Do not use blind
+  history.back(), which is unsafe for direct/deep links.
+- Preserve existing hash deep links and inserted_at hints; parse compound hashes with
+  URLSearchParams rather than brittle string slicing where new context is added.
+
+Explicit non-goals:
+- No API/query/grant change and no browser-history library/framework.
+- No visual redesign beyond route chrome/navigation/context.
+- No change to the underlying grid/list filters except preserving them across return
+  navigation where they already live in memory/localStorage.
+- Do not expose DB details or secrets; source labels name schemas/contracts only.
+
+Expected files / layers:
+- public/index.html and optionally a small pure route helper + unit tests.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Direct-load and in-app navigation smoke for all nine routed views, including browser
+  reload/deep link, title/nav/source/meta correctness, route-aware refresh, and return
+  paths from connectivity/system/run/incident investigations.
+- Simulate slow responses and confirm an older route cannot repaint current chrome.
+
+Read-only / least-privilege constraints:
+- Frontend routing only; no data-contract or credential changes.
+
+Schema assumptions to confirm live:
+- None new. Inventory each route's actual endpoint/source before writing its metadata.
+
+Re-evaluation evidence (2026-07-21, after Phase 24):
+- Nine route families remain: dashboard, run detail, connectivity, app runs,
+  acquisition systems, systems list, system detail, incidents list, incident detail.
+- Source ownership groups cleanly into util.app_run_logs (dashboard/run/app-runs),
+  alert.* (connectivity), stats.acquisition_history (acquisition), util+alert (systems),
+  and incident-engine/incidents.* (incident routes). No API change is needed.
+- Phase 24 incident cursors are transient UI state and are deliberately not encoded in
+  return context; returning to incidents safely restarts at page one with in-memory
+  filters preserved.
+
+Review questions:
+- Can any route display grid-only counts or the wrong source/refresh behavior?
+- Do direct links have deterministic safe return destinations?
+- Are existing run partition hints and incident/system identifiers preserved?
+- Does every route have an accurate document title and active parent navigation?
+- Are slow/stale responses prevented from changing visible-route chrome?

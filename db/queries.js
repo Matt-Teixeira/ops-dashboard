@@ -340,33 +340,167 @@ function appRuns(appName, sinceIso, limit, beforeIso = null, beforeId = null, st
 // near this schema). The drill-down over error_events (~360k rows) is bounded by
 // the (fingerprint, dt DESC) index + LIMIT.
 
-// Severity/state tile rollup. Doubles as the UI's self-check: the tile numbers
-// must equal this GROUP BY at the same moment.
+// Severity/state/category rollup. One small GROUP BY supplies all UI facets and
+// doubles as the UI's self-check: every axis must reconcile to the same total.
 const INCIDENTS_ROLLUP_SQL = `
-SELECT severity, state, count(*)::int AS n
+SELECT severity, state, category, count(*)::int AS n
 FROM incidents.incidents
-GROUP BY severity, state;
+GROUP BY severity, state, category;
 `;
 
-// Filterable list, worst-first. $1..$3 are normalized filters ('all' or a bound
-// value -- never interpolated; the route validates shape first). Severity has no
-// natural sort order as text, so rank it explicitly; 'critical' is reserved by
-// the engine (unused today) but ranked so it would surface first if it appears.
-const INCIDENTS_LIST_SQL = `
+// Complete incident summary per producer entity (Phase 30). This is one atomic,
+// schema-local grouped read over the small incident rollup table: no cursor page,
+// no LIMIT, no cross-source joins, and no N+1 query. Category/source rows repeat
+// the entity scalars so lib/entities.js can merge provenance defensively while the
+// database still supplies one consistent observation point.
+const INCIDENT_ENTITY_SUMMARIES_SQL = `
+WITH base AS (
+  SELECT
+    entity,
+    occurrence_count,
+    first_seen,
+    last_seen,
+    apps,
+    category,
+    category_source,
+    severity,
+    state,
+    state IN ('open', 'recurring', 'acknowledged') AS is_active,
+    state IN ('resolved', 'suppressed') AS is_terminal
+  FROM incidents.incidents
+),
+entity_summary AS (
+  SELECT
+    entity,
+    count(*)::int AS incident_count,
+    count(*) FILTER (WHERE is_active)::int AS active_incident_count,
+    count(*) FILTER (WHERE is_terminal)::int AS terminal_incident_count,
+    count(*) FILTER (
+      WHERE state IS NULL OR state NOT IN (
+        'open', 'recurring', 'acknowledged', 'resolved', 'suppressed'
+      )
+    )::int AS other_state_count,
+    count(*) FILTER (WHERE state = 'open')::int AS state_open,
+    count(*) FILTER (WHERE state = 'recurring')::int AS state_recurring,
+    count(*) FILTER (WHERE state = 'acknowledged')::int AS state_acknowledged,
+    count(*) FILTER (WHERE state = 'resolved')::int AS state_resolved,
+    count(*) FILTER (WHERE state = 'suppressed')::int AS state_suppressed,
+    count(*) FILTER (WHERE severity = 'critical')::int AS severity_critical,
+    count(*) FILTER (WHERE severity = 'high')::int AS severity_high,
+    count(*) FILTER (WHERE severity = 'medium')::int AS severity_medium,
+    count(*) FILTER (WHERE severity = 'low')::int AS severity_low,
+    count(*) FILTER (WHERE severity = 'info')::int AS severity_info,
+    count(*) FILTER (
+      WHERE severity IS NULL OR severity NOT IN ('critical', 'high', 'medium', 'low', 'info')
+    )::int AS severity_other,
+    count(*) FILTER (WHERE is_active AND severity = 'critical')::int AS active_severity_critical,
+    count(*) FILTER (WHERE is_active AND severity = 'high')::int AS active_severity_high,
+    count(*) FILTER (WHERE is_active AND severity = 'medium')::int AS active_severity_medium,
+    count(*) FILTER (WHERE is_active AND severity = 'low')::int AS active_severity_low,
+    count(*) FILTER (WHERE is_active AND severity = 'info')::int AS active_severity_info,
+    count(*) FILTER (
+      WHERE is_active AND (
+        severity IS NULL OR severity NOT IN ('critical', 'high', 'medium', 'low', 'info')
+      )
+    )::int AS active_severity_other,
+    COALESCE(sum(COALESCE(occurrence_count, 0)), 0)::text AS occurrence_count,
+    min(first_seen) AS first_seen,
+    min(first_seen) FILTER (WHERE is_active) AS oldest_active_first_seen,
+    max(last_seen) AS last_seen,
+    min(CASE severity
+      WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+      WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5
+    END) FILTER (WHERE is_active) AS worst_active_rank
+  FROM base
+  GROUP BY entity
+),
+entity_apps AS (
+  SELECT
+    b.entity,
+    COALESCE(
+      array_agg(DISTINCT u.app ORDER BY u.app)
+        FILTER (WHERE u.app IS NOT NULL AND u.app <> ''),
+      ARRAY[]::text[]
+    ) AS apps
+  FROM base b
+  LEFT JOIN LATERAL unnest(COALESCE(b.apps, ARRAY[]::text[])) AS u(app) ON true
+  GROUP BY b.entity
+),
+category_sources AS (
+  SELECT
+    entity,
+    category,
+    category_source,
+    count(*)::int AS source_count,
+    count(*) FILTER (WHERE is_active)::int AS source_active_count
+  FROM base
+  GROUP BY entity, category, category_source
+),
+category_rows AS (
+  SELECT
+    entity,
+    category,
+    category_source,
+    source_count,
+    source_active_count,
+    (sum(source_count) OVER (PARTITION BY entity, category))::int AS category_count,
+    (sum(source_active_count) OVER (PARTITION BY entity, category))::int AS category_active_count
+  FROM category_sources
+)
 SELECT
-  id, fingerprint, entity, occurrence_count, first_seen, last_seen,
-  apps, systems, sample_run_id, sample_message,
-  category, category_source, error_type, phase, func, type,
-  severity, confidence, assessor_kind, assessment,
-  state, resolved_at, resolved_reason
-FROM incidents.incidents
-WHERE ($1 = 'all' OR severity = $1)
-  AND ($2 = 'all' OR state = $2)
-  AND ($3 = 'all' OR category = $3)
+  e.*,
+  a.apps,
+  c.category,
+  c.category_source,
+  c.source_count,
+  c.source_active_count,
+  c.category_count,
+  c.category_active_count
+FROM entity_summary e
+LEFT JOIN entity_apps a USING (entity)
+LEFT JOIN category_rows c USING (entity)
 ORDER BY
-  CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
-                WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END,
-  last_seen DESC
+  (e.active_incident_count > 0) DESC,
+  e.worst_active_rank ASC NULLS LAST,
+  e.active_incident_count DESC,
+  e.last_seen DESC NULLS LAST,
+  e.entity ASC NULLS LAST,
+  c.category_active_count DESC NULLS LAST,
+  c.category_count DESC NULLS LAST,
+  c.category ASC NULLS LAST,
+  c.category_source ASC NULLS LAST;
+`;
+
+// Filterable list, active work first. $1..$3 are normalized filters ('all' or a
+// bound value -- never interpolated; the route validates shape first). Activity
+// semantics come from incident-engine/domain/state.js: open/recurring/acknowledged
+// are active/closeable, resolved/suppressed inactive/terminal, and an unknown future
+// value sinks last. Within each class rank severity, recency, then id for stability.
+const INCIDENTS_LIST_SQL = `
+WITH ranked AS (
+  SELECT id, entity, occurrence_count, last_seen, category, category_source,
+         severity, state,
+         CASE WHEN state IN ('open', 'recurring', 'acknowledged') THEN 0
+              WHEN state IN ('resolved', 'suppressed') THEN 1 ELSE 2 END AS activity_rank,
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+                       WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END AS severity_rank
+  FROM incidents.incidents
+  WHERE ($1 = 'all' OR severity = $1)
+    AND ($2 = 'all' OR state = $2)
+    AND ($3 = 'all' OR category = $3)
+)
+SELECT *
+FROM ranked
+WHERE $5::int IS NULL
+   OR activity_rank > $5
+   OR (activity_rank = $5 AND severity_rank > $6)
+   OR (activity_rank = $5 AND severity_rank = $6 AND (
+        ($7::timestamptz IS NOT NULL AND (last_seen < $7 OR last_seen IS NULL))
+        OR (last_seen IS NOT DISTINCT FROM $7::timestamptz AND id < $8::bigint)
+      ))
+ORDER BY
+  activity_rank ASC, severity_rank ASC, last_seen DESC NULLS LAST,
+  id DESC
 LIMIT $4;
 `;
 
@@ -407,8 +541,14 @@ function incidentsRollup() {
   return db.any(INCIDENTS_ROLLUP_SQL);
 }
 
-function incidentsList(severity = "all", state = "all", category = "all", limit = 1000) {
-  return db.any(INCIDENTS_LIST_SQL, [severity, state, category, limit]);
+function incidentEntitySummaries() {
+  return db.any(INCIDENT_ENTITY_SUMMARIES_SQL);
+}
+
+function incidentsList(severity = "all", state = "all", category = "all", limit = 101, cursor = null) {
+  return db.any(INCIDENTS_LIST_SQL, [severity, state, category, limit,
+    cursor && cursor.activityRank, cursor && cursor.severityRank,
+    cursor && cursor.lastSeen, cursor && cursor.id]);
 }
 
 function incidentById(id) {
@@ -434,4 +574,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, incidentsRollup, incidentsList, incidentById, incidentEvents, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, incidentsRollup, incidentEntitySummaries, incidentsList, incidentById, incidentEvents, ping };

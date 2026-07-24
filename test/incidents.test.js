@@ -13,7 +13,17 @@ const {
   shapeRollup,
   shapeEvents,
   shapeAssessment,
+  ACTIVE_STATES,
+  INACTIVE_STATES,
+  shapeIncidentList,
+  encodeCursor,
+  decodeCursor,
 } = require("../lib/incidents");
+
+test("activity classes mirror incident-engine lifecycle semantics", () => {
+  assert.deepEqual(ACTIVE_STATES, ["open", "recurring", "acknowledged"]);
+  assert.deepEqual(INACTIVE_STATES, ["resolved", "suppressed"]);
+});
 
 test("normalizeSeverity: known values pass (case/space-insensitive), else 'all'", () => {
   assert.equal(normalizeSeverity("high"), "high");
@@ -97,12 +107,51 @@ test("shapeIncidents: malformed confidence -> null, never NaN (Codex low finding
   assert.equal(shape(Infinity), null);
 });
 
+test("shapeIncidentList: lean projection preserves provenance and omits detail payload", () => {
+  const [i] = shapeIncidentList([{ id: "9", entity: "SME1", severity: "high", state: "open", category: "unknown", category_source: "oracle", occurrence_count: "7", last_seen: "2026-07-21T00:00:00Z", assessment: { reasons: ["large"] }, sample_message: "large" }]);
+  assert.deepEqual(i, { id: 9, entity: "SME1", severity: "high", state: "open", category: "unknown", categorySource: "oracle", occurrenceCount: 7, lastSeen: "2026-07-21T00:00:00Z" });
+  assert.equal("assessment" in i, false);
+  assert.equal("sampleMessage" in i, false);
+});
+
+test("incident cursor: opaque round trip and malformed inputs fail closed", () => {
+  const encoded = encodeCursor({ activity_rank: 0, severity_rank: 2, last_seen: "2026-07-21T12:00:00Z", id: "17338" });
+  assert.deepEqual(decodeCursor(encoded), { activityRank: 0, severityRank: 2, lastSeen: "2026-07-21T12:00:00.000Z", id: "17338" });
+  const nullTime = encodeCursor({ activity_rank: 1, severity_rank: 4, last_seen: null, id: "1" });
+  assert.equal(decodeCursor(nullTime).lastSeen, null);
+  for (const bad of ["", "not+base64", Buffer.from("{}").toString("base64url"), Buffer.from(JSON.stringify({ a: 9, s: 0, t: null, i: "1" })).toString("base64url")]) {
+    assert.throws(() => decodeCursor(bad), /invalid cursor/);
+  }
+});
+
+test("incident cursor: only canonical PostgreSQL-compatible timestamps pass", () => {
+  const cursor = (t) => Buffer.from(JSON.stringify({ a: 0, s: 1, t, i: "7" })).toString("base64url");
+  assert.equal(decodeCursor(cursor("2026-07-21T12:00:00.000Z")).lastSeen, "2026-07-21T12:00:00.000Z");
+  for (const bad of [
+    "Tue, 21 Jul 2026 12:00:00 GMT",
+    "2026-07-21T12:00:00Z",
+    "-000001-01-01T00:00:00.000Z",
+    "+010000-01-01T00:00:00.000Z",
+    "0000-01-01T00:00:00.000Z",
+    "2026-02-30T00:00:00.000Z",
+  ]) {
+    assert.throws(() => decodeCursor(cursor(bad)), /invalid cursor/, bad);
+  }
+});
+
+test("incident cursor: id is bounded to PostgreSQL signed bigint", () => {
+  const cursor = (i) => Buffer.from(JSON.stringify({ a: 0, s: 1, t: null, i })).toString("base64url");
+  assert.equal(decodeCursor(cursor("9223372036854775807")).id, "9223372036854775807");
+  for (const bad of ["9223372036854775808", "99999999999999999999", "-1", "1.0", "abc"])
+    assert.throws(() => decodeCursor(cursor(bad)), /invalid cursor/, bad);
+});
+
 test("shapeRollup: totals equal the GROUP BY (the tile self-check), all keys present", () => {
   const rows = [
-    { severity: "high", state: "open", n: 100 },
-    { severity: "high", state: "resolved", n: 9 },
-    { severity: "medium", state: "open", n: 200 },
-    { severity: "info", state: "recurring", n: 31 },
+    { severity: "high", state: "open", category: "connection_reset", n: 100 },
+    { severity: "high", state: "resolved", category: "connection_reset", n: 9 },
+    { severity: "medium", state: "open", category: "unknown", n: 200 },
+    { severity: "info", state: "recurring", category: "no_new_data", n: 31 },
   ];
   const r = shapeRollup(rows);
   assert.equal(r.total, 340);
@@ -114,11 +163,31 @@ test("shapeRollup: totals equal the GROUP BY (the tile self-check), all keys pre
   assert.equal(r.byState.recurring, 31);
   assert.equal(r.byState.resolved, 9);
   assert.equal(r.byState.suppressed, 0);
+  assert.deepEqual(r.byCategory, [
+    { category: "unknown", count: 200 },
+    { category: "connection_reset", count: 109 },
+    { category: "no_new_data", count: 31 },
+  ]);
   // total must equal both axis sums -- the arithmetic identity the tiles rely on
   const sevSum = Object.values(r.bySeverity).reduce((a, b) => a + b, 0);
   const stSum = Object.values(r.byState).reduce((a, b) => a + b, 0);
+  const catSum = r.byCategory.reduce((a, item) => a + item.count, 0);
   assert.equal(sevSum, r.total);
   assert.equal(stSum, r.total);
+  assert.equal(catSum, r.total);
+});
+
+test("shapeRollup: categories sort by count then name and malformed names fall back", () => {
+  const r = shapeRollup([
+    { severity: "high", state: "open", category: "zeta", n: "2" },
+    { severity: "medium", state: "open", category: "alpha", n: 2 },
+    { severity: "info", state: "resolved", category: null, n: 1 },
+  ]);
+  assert.deepEqual(r.byCategory, [
+    { category: "alpha", count: 2 },
+    { category: "zeta", count: 2 },
+    { category: "unknown", count: 1 },
+  ]);
 });
 
 test("shapeRollup: empty/non-array -> zeroed shape", () => {
@@ -126,6 +195,7 @@ test("shapeRollup: empty/non-array -> zeroed shape", () => {
   assert.equal(r.total, 0);
   assert.equal(r.bySeverity.high, 0);
   assert.equal(r.byState.open, 0);
+  assert.deepEqual(r.byCategory, []);
 });
 
 test("shapeEvents: message falls back err_msg -> note_message (the engine's order)", () => {
@@ -155,12 +225,18 @@ test("incidents SQL: bound params, no interpolation, no verbose_log, index-frien
     assert.doesNotMatch(sql, /\$\{/, "no template interpolation inside SQL");
     assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|TRUNCATE)\b/i, "read-only"); // \b: inserted_at is fine
   }
-  assert.match(rollup, /GROUP BY severity, state/);
+  assert.match(rollup, /SELECT severity, state, category, count/);
+  assert.match(rollup, /GROUP BY severity, state, category/);
   assert.match(list, /\$1 = 'all' OR severity = \$1/, "severity filter bound");
   assert.match(list, /\$3 = 'all' OR category = \$3/, "category filter bound");
   assert.match(list, /CASE severity WHEN 'critical' THEN 0/, "explicit severity rank");
-  assert.match(list, /last_seen DESC/, "matches idx_incidents_severity_last_seen");
+  assert.match(list, /state IN \('open', 'recurring', 'acknowledged'\) THEN 0/, "active states rank first");
+  assert.match(list, /state IN \('resolved', 'suppressed'\) THEN 1 ELSE 2/, "inactive then unknown states");
+  assert.match(list, /activity_rank ASC, severity_rank ASC, last_seen DESC NULLS LAST/, "exact mixed-direction order");
+  assert.match(list, /last_seen IS NOT DISTINCT FROM \$7::timestamptz AND id < \$8::bigint/, "equal-time id boundary is bound");
+  assert.match(list, /id DESC/, "stable id tie-breaker");
   assert.match(list, /category_source/, "provenance always selected with category");
+  assert.doesNotMatch(list, /assessment|sample_message|sample_run_id|\bapps\b|\bsystems\b/, "list projection stays lean");
   assert.match(detail, /id = \$1::bigint/, "detail keyed by bound bigint id");
   assert.match(events, /fingerprint = \$1 AND entity = \$2/, "drill-down keyed to hit the engine's (fingerprint, entity, dt DESC) index");
   assert.match(events, /ORDER BY dt DESC\n/, "plain dt DESC -- must match the index ordering exactly");

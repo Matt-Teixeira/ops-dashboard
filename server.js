@@ -13,6 +13,7 @@ const appRunsLib = require("./lib/app-runs");
 const acq = require("./lib/acq");
 const systemsLib = require("./lib/systems");
 const incidentsLib = require("./lib/incidents");
+const entitiesLib = require("./lib/entities");
 const { createRunCache } = require("./lib/run-cache");
 
 const ERRORS_LOOKBACK_DAYS = Number(process.env.ERRORS_LOOKBACK_DAYS || 2);
@@ -185,8 +186,11 @@ function buildApp() {
     }
   });
 
-  // Connectivity panel: latest per-equipment connectivity state across the HHM
-  // (SSH) and MMB (rsync) alert tables. Tiny tables (PK on system_id, no detoast,
+  // Connectivity panel: last-recorded per-equipment result across the HHM (SSH)
+  // and MMB (rsync) alert tables, plus Phase 20 freshness/current-state semantics.
+  // Historical rows are retained indefinitely, so lib/connectivity.js only calls a
+  // result operationally ONLINE/OFFLINE while inserted_at is within the evidenced
+  // 45-minute budget. Tiny tables (PK on system_id, no detoast,
   // no partitions) so this runs directly on the request path -- no cache. The
   // worst-first sort and the two ages are derived in lib/connectivity.js so the
   // handler stays thin. If the alert grant is missing, the SELECT raises and the
@@ -307,27 +311,49 @@ function buildApp() {
 
   // Incidents (Phase 19): read-only over the incidents schema, which is produced by
   // incident-engine (the writer; see its integration brief). One response carries the
-  // severity/state rollup (the tiles -- and the UI's self-check: tiles must equal the
-  // GROUP BY) plus the filtered list. Small indexed table (~530 rows), no json blob to
-  // detoast -> request path, no cache (house precedent: connectivity).
+  // severity/state/category rollup (the controls -- and the UI's self-check: every
+  // axis must equal the GROUP BY) plus the filtered, active-first list. Small table
+  // (~530 rows), no json blob to detoast -> request path, no cache.
   app.get("/api/incidents", async (req, res, next) => {
     const severity = incidentsLib.normalizeSeverity(req.query.severity);
     const state = incidentsLib.normalizeState(req.query.state);
     const category = incidentsLib.normalizeCategory(req.query.category);
-    const limit = appRunsLib.clampInt(req.query.limit, 1000, 1, 2000);
+    const limit = appRunsLib.clampInt(req.query.limit, 100, 25, 200);
+    let cursor = null;
+    if (req.query.cursor != null) {
+      try { cursor = incidentsLib.decodeCursor(req.query.cursor); }
+      catch { return res.status(400).json({ error: "invalid incident cursor" }); }
+    }
     try {
       const [rollupRows, listRows] = await Promise.all([
         queries.incidentsRollup(),
-        queries.incidentsList(severity, state, category, limit),
+        queries.incidentsList(severity, state, category, limit + 1, cursor),
       ]);
-      const incidents = incidentsLib.shapeIncidents(listRows);
+      const hasMore = listRows.length > limit;
+      const pageRows = hasMore ? listRows.slice(0, limit) : listRows;
+      const incidents = incidentsLib.shapeIncidentList(pageRows);
       res.json({
         asOf: new Date().toISOString(),
         filters: { severity, state, category },
         rollup: incidentsLib.shapeRollup(rollupRows),
         count: incidents.length,
+        pageSize: limit,
+        nextCursor: hasMore ? incidentsLib.encodeCursor(pageRows[pageRows.length - 1]) : null,
         incidents,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Complete SME incident-card contract (Phase 30): one atomic grouped read of
+  // incidents.incidents, shaped into SME and explicit non-SME reconciliation
+  // groups. No incident page regrouping and no connectivity/run-log composition.
+  app.get("/api/entities", async (_req, res, next) => {
+    try {
+      const rows = await queries.incidentEntitySummaries();
+      const asOf = new Date().toISOString();
+      res.json(entitiesLib.shapeEntityResponse(rows, asOf));
     } catch (err) {
       next(err);
     }

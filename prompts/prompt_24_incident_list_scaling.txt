@@ -1,0 +1,82 @@
+Phase 24 - Lean, Keyset-Paginated Incident List
+
+Phase goal:
+Bound the Incidents list response and DOM as the incident table grows: return only
+list-required fields, paginate with a stable keyset matching Phase 21's activity-first
+order, and let the UI load additional pages without gaps, duplicates, or filter drift.
+
+Background (revalidate before coding):
+- The reviewed /api/incidents response was ~740KB for 528 rows because the list query
+  selects detail-only fields such as sample_message, assessment, apps, and systems.
+  The list UI uses only id, severity, state, category/provenance, entity, lastSeen,
+  and occurrenceCount.
+- The endpoint has a LIMIT (default 1000) but no cursor. When total exceeds that cap,
+  the unfiltered UI can silently render a partial list while displaying the global
+  rollup total.
+- Phase 21 establishes a stable activity-first order and category filter. Paging must
+  use exactly that order and carry severity/state/category across every page.
+- The per-app run log already demonstrates the repo's preferred keyset pattern; do
+  not use OFFSET for a live list where new rows can arrive at the top.
+
+Implementation scope:
+- Split incident list and detail projections. The list query selects only fields
+  required by the list, including category_source; the detail query remains complete.
+- Add keyset pagination over the exact stable order established in Phase 21:
+  activity rank ASC, severity rank ASC, last_seen DESC, id DESC (or the documented
+  equivalent). Implement the mixed-direction cursor predicate explicitly with bound
+  values; never interpolate rank/order expressions from request input.
+- Use an opaque validated cursor or a small set of validated cursor fields. Keep
+  cursor encode/decode pure and unit-tested. Invalid cursors return 400, not 500.
+- Default to a measured page size (for example 100), clamp a small safe range, and
+  return page count, global rollup total, next cursor/null, and incidents[]. Preserve
+  current filter echo fields. Make completeness explicit.
+- public/index.html: render the first page, "showing/loaded N of total", and a
+  load-more control. Each filter change starts from page 1; subsequent pages retain
+  severity/state/category. Guard concurrent page/filter/navigation requests and
+  deduplicate defensively by incident id.
+- Preserve category_source end to end and retain all Phase 21 ordering/filter behavior.
+- Measure response bytes and request latency before/after; record the result.
+
+Explicit non-goals:
+- No incident writes, incident-engine changes, cache, or new database object/index
+  unless EXPLAIN proves one is necessary and the schema owner approves it separately.
+- No infinite scroll; use an explicit load-more affordance.
+- No event-detail paging; incident detail remains capped by its existing endpoint.
+- No OFFSET pagination and no dropping oracle provenance to save bytes.
+
+Expected files / layers:
+- db/queries.js, lib/incidents.js, test/incidents.test.js, server.js,
+  public/index.html, plus docs if the public API contract is documented.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Live EXPLAIN for first and subsequent pages as ops_dashboard_ro.
+- Live two-page boundary check under equal timestamps: zero duplicate ids, correct
+  order, filters retained; insert/drift-tolerant reasoning documented.
+- Compare uncompressed response size and latency before/after at current volume.
+
+Read-only / least-privilege constraints:
+- Existing SELECT-only incidents grant; no writes or grant expansion.
+- Cursor/filter inputs are validated then bound to SQL parameters.
+
+Schema assumptions to confirm live:
+- last_seen non-null behavior, bigint id uniqueness/order, current indexes, category
+  source contract, and whether activity/severity ranks cover every live enum value.
+
+Re-evaluation evidence (2026-07-21, after Phase 23):
+- Live table remains 529 rows; `last_seen` is non-null on all 529, ids are unique, and
+  every category_source is classifier/oracle. The cursor still handles a future NULL
+  last_seen explicitly because the schema column is nullable.
+- Current unpaginated response is 745,259 bytes and measured 128 ms locally. Use a
+  100-row default page, clamp 25..200, and fetch limit+1 to derive nextCursor without
+  a separate count query; the existing global rollup supplies total.
+- Cursor order is pinned to activity rank ASC, severity rank ASC, last_seen DESC
+  NULLS LAST, id DESC. The opaque cursor carries the two derived ranks, timestamp/null,
+  and bigint id string; all components are validated before binding.
+
+Review questions:
+- Does the keyset predicate exactly match the mixed-direction ORDER BY?
+- Can equal-last_seen rows be skipped or duplicated at a page boundary?
+- Does every load-more request retain all active filters and request generation guards?
+- Is the list projection genuinely lean while detail remains complete?
+- Does the UI distinguish total incidents from currently loaded/rendered incidents?

@@ -1,0 +1,86 @@
+Phase 23 - Shared Large-List Controls
+
+Phase goal:
+Make the existing non-incident operational lists usable at hundreds of rows with
+sticky context, view-appropriate client-side filters, and progressive rendering,
+without changing their APIs or adding a framework.
+
+Background (from the 2026-07-21 UX review; revalidated after Phase 22):
+- Connectivity returns ~539 rows; Systems returns ~209; Acquisition by system has
+  hundreds of rows; per-app run logs can load multiple keyset pages.
+- These tables lack sticky headers and most lack search/filter controls. Rendering
+  every returned row makes issue-heavy views hard to scan even though payload sizes
+  are currently acceptable for the host-internal tool.
+- APIs already return deliberately ordered data (offline/worst/newest first). Client
+  filtering must preserve that server order unless the UI explicitly offers sorting.
+- Incidents are excluded here because Phase 24 adds server-side paging and a lean
+  projection; the job grid already has its own Phase 8-9 controls.
+
+Implementation scope:
+- Add shared sticky table-header styling that works in light/dark mode and does not
+  obscure focus outlines or the first row.
+- Introduce a small pure list-view helper (or equivalent existing-module extension)
+  for case-insensitive text matching, enum/set filters, and render slicing. Keep it
+  DOM-free and unit-tested.
+- Connectivity: search system/detail/category/phase; filter by source and the Phase 20
+  operational state/freshness. Preserve API worst-first order.
+- Systems: search system/app; filter error-bearing versus warn-only and cross-app.
+- Acquisition systems: search system/modality/manufacturer; filter source and
+  failures-only.
+- Per-app run log: keep the existing server status filter and keyset "load more";
+  add sticky headers and, only if useful, a clearly labeled search of currently
+  loaded run ids/job types. Never imply that a loaded-page-only search covers unseen
+  pages.
+- Render an initial bounded row count for fully fetched list views (choose a value
+  from live viewport/DOM measurements), with "show more" in deterministic increments
+  and honest "showing N of M matching" copy. Filtering resets the visible slice.
+- Each control needs a label, clear/reset path, visible selected state, empty-result
+  copy, and persisted state only if it follows the existing grid precedent without
+  leaking one view's filters into another.
+
+Explicit non-goals:
+- No endpoint/query/grant/cache changes and no server pagination in this phase.
+- No incident-list work (Phase 24), job-grid control changes, or route chrome work.
+- No client resort that defeats the APIs' intentional worst-first/newest-first order.
+- No virtual-scroller/framework/build step.
+- Do not hide server truncation: /api/systems has a 500-row cap; if the response does
+  not expose truncation, note that as a follow-up instead of claiming completeness.
+
+Expected files / layers:
+- public/index.html, one existing/new public pure-helper module, and focused tests.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- node --check on changed frontend scripts.
+- Browser smoke at current live volumes for every filter/reset/show-more path; verify
+  API request counts do not increase for client-only interactions and ordering is
+  preserved.
+
+Read-only / least-privilege constraints:
+- Frontend-only over existing read-only responses; no DB/grant changes.
+
+Schema assumptions to confirm live:
+- Current payload fields and row counts for connectivity, systems, acquisition, and
+  app runs; which endpoints are already capped/paged and what completeness metadata
+  each provides.
+
+Re-evaluation evidence (2026-07-21, after Phase 22):
+- Live responses: connectivity 539 complete snapshot rows; systems 209 rows from a
+  server query capped at 500 but with no truncation flag; acquisition 202 complete
+  grouped rows for its 24h window; data_acquisition run log 50 loaded rows plus a
+  non-null keyset cursor (more unseen pages).
+- Payload fields still support the proposed filters, including Phase 20
+  operationalState, systems errors/warns/appCount/apps, acquisition failed/source/
+  modality/manufacturer, and app-run runId/jobType.
+- Use 50 initial rows and 50-row reveal increments for the three fully fetched views:
+  this is two-to-three desktop viewports of compact rows while bounding the initial
+  DOM by roughly 4x–11x at current volumes. App-run pages stay server-keyset-paged;
+  their optional search is explicitly “loaded runs.”
+
+Review questions:
+- Are all controls explicit about whether they filter the full response or only
+  currently loaded pages?
+- Does filtering preserve server worst-first/newest-first order?
+- Do shown/matching/loaded counts reconcile after every filter and show-more action?
+- Are sticky headers usable in both color schemes and during keyboard navigation?
+- Did this remain client-only and dependency-free?

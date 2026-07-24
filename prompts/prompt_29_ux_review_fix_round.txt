@@ -1,0 +1,277 @@
+Phase 29 - UX Review Fix Round & Commit-Readiness Closure
+
+Phase goal:
+Close the independently reproduced defects introduced or left incomplete by Phases
+20–28, restore the affected route/accessibility/responsive guarantees, harden incident
+cursor validation so tampered cursors fail with 400, and leave the entire uncommitted
+UX series ready for a final review and commit.
+
+Review source and authority:
+- Primary findings: `notes/review_ux_implementation_phases_20_28_claude_findings_2026-07-21.md`.
+- Review scope/hard constraints: `notes/review_handoff_ux_implementation_phases_20_28_2026-07-21.md`.
+- The findings file was amended after cross-review: M8 is server-side validation in
+  `lib/incidents.js`, is part of the mandatory blocking set, and invalid cursor values
+  must return the contracted generic 400 rather than reach a PostgreSQL cast and 500.
+- Baseline before this fix round: 138/138 tests pass, but the working tree is not
+  commit-ready. Preserve all existing review artifacts and unrelated user changes.
+
+Mandatory blocking fixes:
+
+1. H1 - Refresh/navigation race
+   - The global refresh control must never remain disabled or stuck on “refreshing…”
+     when its captured route handler finishes after navigation changes
+     `currentRefresh`.
+   - Re-enable/reset the button independently of handler identity. Preserve the
+     prevention of concurrent button-initiated refreshes and ensure handler rejection
+     cannot strand the control.
+   - Browser-test refresh followed immediately by navigation on both a list route and
+     a detail route, including a delayed/rejected fetch.
+
+2. M1 - Sticky headers versus responsive table containment
+   - Preserve Phase 28 local horizontal containment and Phase 23 sticky headers at the
+     same time. Do not “pass” by allowing body overflow or removing stickiness.
+   - Establish a real vertical scroll context for tables that exceed the available
+     viewport (for example a responsive max-height with `overflow: auto`), while short
+     tables should not acquire a needlessly large/empty scroll box.
+   - Verify with actual scroll geometry: scroll a tall wrapper vertically and assert
+     its header remains at the wrapper’s top; separately assert local horizontal
+     scrolling and no body overflow at 390px. Recheck 1440px light/dark density.
+
+3. M2 - Selected-chip visibility
+   - Remove the higher-specificity white `.chip.active` ring or replace it with the
+     high-contrast selected color used by `aria-pressed` controls.
+   - Confirm the selected state is visibly distinct in light and dark schemes and does
+     not rely on color alone where text/pressed semantics already exist.
+
+4. M4/L7 - Lossless defensive note formatting
+   - Array-valued notes must render as safe JSON rather than `[object Object]`.
+   - Preserve nested and unknown fields. Promote only keys whose values are actually
+     represented in the human-readable header; delete only those represented keys
+     from the JSON tail.
+   - Treat key presence separately from truthiness so `0`, `false`, and empty-string
+     values are not silently lost. If both `system_id` and `sme` exist with distinct
+     values, preserve both; deduplicate only genuinely repeated values.
+   - Non-scalar promoted values must not degrade to `[object Object]`. The exported
+     helper must not throw on unusual input; use a deterministic safe fallback for
+     values that native `JSON.stringify` cannot serialize.
+   - Continue to insert the returned string through `textContent`; no HTML rendering.
+
+5. M8 - Fail-closed incident cursor contract (server-side, mandatory)
+   - `decodeCursor` must accept only a PostgreSQL-compatible, four-digit-year UTC ISO
+     timestamp in the exact form emitted for normal rows by `encodeCursor`
+     (`YYYY-MM-DDTHH:mm:ss.sssZ`). Validate by strict shape plus `toISOString`
+     round-trip; reject signed/extended years, noncanonical formats, and invalid or
+     out-of-range dates without throwing a non-contract error.
+   - Validate the id with `BigInt` and enforce PostgreSQL signed-bigint compatibility:
+     non-negative and no greater than `9223372036854775807`. Reject overflow before
+     calling the query. Retain the existing cursor length/base64url/rank checks.
+   - A malformed, noncanonical, out-of-PostgreSQL-range, or otherwise tampered cursor
+     must return the existing generic HTTP 400 response and must not invoke SQL.
+   - Add tests for the two reproduced failures (`-000001-...` timestamp and 20-digit
+     bigint overflow), RFC-1123/noncanonical dates, invalid/valid ISO boundaries,
+     malformed base64/JSON, and a valid encode/decode round trip.
+
+Required same-round medium fixes:
+
+6. M3 - Active zero-count filters
+   - A zero-count status chip may be disabled only when inactive. If an active
+     persisted filter reaches zero after refresh, it must remain enabled/toggleable so
+     the operator can clear it. Preserve `aria-pressed` and localStorage behavior.
+
+7. M5 - Warm-up/error chrome ownership and retry control
+   - Dashboard warm-up and dashboard-error paths must not write route chrome while a
+     different route is active.
+   - Keep grid warm-up useful in the background if desired, but guard all `#meta`
+     writes by route ownership. Maintain at most one scheduled warm-up retry chain;
+     repeated manual/automatic calls must not accumulate timers.
+   - Delayed success/error/503 completions must not repaint another route’s title,
+     source, meta summary, navigation, or body.
+
+8. M6 - Dashboard summary restoration
+   - Returning to the dashboard with cached `gridData` must restore the full summary
+     immediately, not remain at generic “Dashboard” until the next fetch.
+   - Base chrome ownership on the active route rather than the old section’s hidden
+     timing, or order visibility/chrome changes so the summary gate is true.
+
+9. M7 - Keyboard-safe incident category filtering
+   - Changing the category select must not strand focus on `<body>` after every
+     arrow-key change. Keep the control shell stable during result loading or restore
+     focus to the equivalent select after success, empty, and error states.
+   - A keyboard user must be able to traverse multiple category options repeatedly.
+     Preserve request-generation protection, normalized server filters, count-backed
+     options, and filter reset behavior.
+
+10. M9 - Native data_acquisition disclosure
+    - Replace the `href="#"` inline-runs toggle with `button type="button"`.
+    - Maintain the compact visual treatment, expose accurate `aria-expanded`, support
+      Enter and Space natively, and avoid hash/history changes. Preserve the “see all”
+      navigation link inside the expanded content.
+
+Low findings accepted into this closure phase:
+
+11. L1 - Give each focusable `.table-scroll` wrapper a valid landmark/group semantic
+    and useful accessible name; avoid a prohibited `aria-label` on a generic div and
+    avoid excessive duplicate announcements.
+
+12. L2/L3 - Give each routed view a persistent polite status region that is present
+    before its text is updated; do not depend on a pre-populated newly inserted status
+    node being announced. Preserve/restore keyboard focus after show-more/load-more
+    re-renders. Expanding the error feed must not silently collapse already opened
+    message disclosures. Prefer append-only row updates when simpler than full repaint.
+
+13. L4 - Remove the obsolete `age` sort key after the Age column’s Phase 26 removal.
+    Migrate a persisted `sortKey: "age"` to the normal default so an invisible sort can
+    never remain active.
+
+14. L5 - Label the incident rollup as “incidents overall” (or equivalently explicit
+    global wording) when filters are active; do not imply that the global total is the
+    number of matching rows.
+
+15. L8 - Do not let a hidden late dashboard repaint capture another route as the
+    `from=` context for grid/feed links. Link return context should describe the view
+    the link belongs to, not whichever route happened to be active at completion.
+
+16. L10 - Reformat the new dense one-line `public/routes.js`, `public/time-view.js`,
+    and their tests to the existing readable helper-module style. This is mechanical
+    only: no route/time semantic changes, and avoid unrelated mass formatting.
+
+17. L11 - Provide a small native, keyboard-accessible way to copy the bare full UUID
+    beside compact UUID displays. Preserve exact href/title/accessible-name values;
+    give success/failure feedback without relying on an icon alone. If the Clipboard
+    API is unavailable or rejects, expose/select the bare UUID in a text control for
+    manual copying and never announce false success. Do not expand table width back to
+    full UUIDs.
+
+Explicitly deferred findings:
+- L6 (systems truncation sentinel): no current truncation was observed; an API-level
+  completeness contract should be designed as its own additive backend change rather
+  than smuggled into this UX correction round. Keep the existing warning behavior.
+- L9 (relative-time rounding): current boundaries are unit-tested and consistent.
+  Changing operator-facing rounding needs a separate product decision; record this as
+  consciously accepted, not forgotten.
+- Do not reinterpret F7 by merging “latest status” and “24h health.” Phase 26
+  intentionally labels those distinct scopes. Preserve that decision.
+
+Implementation sequence:
+1. Reproduce H1, M1, M2, M4, and M8 before editing and record the evidence.
+2. Add failing pure-unit tests first for cursor and note-format edge cases.
+3. Implement server-side cursor validation, then run focused backend tests and live
+   invalid-cursor smoke before touching frontend behavior.
+4. Fix route/refresh/retry ownership and add focused browser race scenarios.
+5. Fix sticky containment, selection/zero-chip states, native disclosures, category
+   focus, progressive-render focus, note/copy behavior, and accepted low items.
+6. Run the full suite and a nine-route responsive/keyboard/browser regression pass.
+7. Reconcile the Phase 25, 27, and 28 validation overclaims in durable documentation;
+   record each reviewed finding as closed or explicitly deferred in the Phase 29 log.
+
+Expected files / layers:
+- `lib/incidents.js`, `test/incidents.test.js` for cursor validation.
+- `public/feed-view.js`, `test/feed-view.test.js` for note fidelity.
+- `public/index.html` for controller, chrome, retry, DOM, CSS, focus, disclosure, copy,
+  status, and responsive fixes.
+- `public/routes.js`, `public/time-view.js`, `test/routes.test.js`,
+  `test/time-view.test.js` for mechanical readability only (plus targeted route
+  round-trip tests already identified by review).
+- `markdown/PHASE_LOG.md`, `markdown/PROMPTS.md`, and, if needed, narrow corrections
+  to the Phase 25/27/28 entries. No DB query/schema/grant/dependency file is expected.
+
+Explicit non-goals:
+- No framework, frontend dependency, build step, card redesign, auth redesign,
+  incident-engine write-back, alerting workflow, DB schema/index change, or pipeline
+  write.
+- No incident ORDER BY/keyset SQL rewrite: its full 529-row cursor walk was correct.
+- No connectivity freshness/budget/order changes: its live reconciliation was correct.
+- No API response-shape change except generic 400 enforcement for invalid cursors.
+- No hiding operational columns, removing progressive disclosure, changing route
+  families, or breaking legacy deep links.
+- No deployment/restart of the service on port 8080 and no commit/push unless the user
+  separately requests it.
+
+Read-only / least-privilege constraints:
+- Preserve `ops_dashboard_ro` and introduce no write/DDL/grant path.
+- Cursor validation must reject before query execution; all accepted values remain
+  bound parameters. Do not interpolate decoded cursor fields.
+- Preserve partition filters and the bounded data_acquisition detoast exception.
+- Do not expose internal PostgreSQL errors or cursor payload detail to clients.
+
+Schema/data assumptions to confirm live before implementation:
+- Incident ids currently fit PostgreSQL signed bigint and server-issued cursors contain
+  canonical `Date#toISOString()` timestamps or null.
+- Representative live notes remain JSON-derived (therefore normally acyclic), but the
+  exported helper still needs deterministic defensive behavior for direct unit use.
+- Identify at least one genuinely tall table for sticky-scroll geometry and one route
+  with enough incident categories to exercise repeated keyboard selection.
+
+Required unit validation:
+- Baseline full suite must still pass, with new tests added rather than replacing
+  existing assertions.
+- Cursor: canonical round trip; null timestamp; malformed encoding/JSON/ranks;
+  RFC-1123/noncanonical date; signed/extended-year or otherwise PostgreSQL-invalid
+  date; bigint maximum; bigint overflow; and generic 400 endpoint behavior.
+- Notes: null, scalar, array of objects, nested object, promoted-only, mixed note,
+  falsy promoted values, distinct/equal `system_id` + `sme`, non-scalar promoted
+  values, and non-serializable defensive fallback.
+- Routes: `appruns:` and `system:` return-context round trips in addition to existing
+  incident/unsafe cases.
+- Grid state: persisted obsolete `age` sort migration and active zero-count chip logic
+  should be extracted/tested if that can be done without creating a new framework.
+
+Required browser/integration validation:
+- Use an isolated copy of the worktree on port 18080; never restart port 8080.
+- All nine route families: zero page/console errors, correct title/source/meta/active
+  nav/global refresh, native tables/captions/scopes, and safe return paths.
+- H1: delay a refresh, navigate before completion, then confirm the button reads
+  “refresh,” is enabled, and successfully refreshes the new route.
+- M5/M6: simulate dashboard 503 and fetch failure, navigate away, and verify no later
+  timer/completion clobbers subroute chrome; return to cached dashboard and verify the
+  full summary appears immediately. Confirm only one retry timer/request chain.
+- M1: on a tall view, scroll the table wrapper vertically and assert the sticky header
+  remains at its top. At 390px also assert body width is contained and the wrapper
+  scrolls horizontally; inspect 1440px light/dark screenshots.
+- M2/M3: selected chip has a high-contrast computed ring in light/dark; an active chip
+  whose count becomes zero remains enabled and can clear the persisted filter.
+- M7/M9: keyboard-select at least three incident categories sequentially with focus
+  restored/preserved; activate DA inline runs with Space and verify `aria-expanded`.
+- Progressive disclosure: show-more/load-more focus remains usable and already opened
+  error details stay open.
+- UUID: link/navigation retains the exact full id; the explicit copy action writes the
+  bare full UUID and reports its result accessibly.
+- Cursor endpoint: reproduced tampered timestamp and bigint inputs now return generic
+  400, a valid next cursor still returns the correct next page, and a full walk remains
+  duplicate/order safe.
+
+Validation commands:
+- `docker run --rm -v "$PWD":/w -w /w node:lts node --test`
+- Compile all `public/*.js` plus the inline script in `public/index.html` in a
+  disposable `node:lts` container.
+- `git diff --check` and `git status --short`; preserve the original review evidence.
+- Browser/Playwright against the disposable port-18080 app at 390x844, 768x900, and
+  1440x900 light/dark. Save new evidence separately from the original pre-change shots.
+
+Documentation / completion gate:
+- Add a Phase 29 entry to `markdown/PHASE_LOG.md` only after implementation and all
+  validation succeeds. Record H1, M1-M9, and accepted L-items individually as closed;
+  record L6/L9 as explicitly deferred with rationale.
+- Correct or annotate the Phase 25/27/28 overclaims: route generations previously did
+  not own every meta path; selected chips/native disclosures were incomplete; sticky
+  headers were not actually asserted after containment.
+- Change Phase 29 from Pending to Completed in `markdown/PROMPTS.md` only when every
+  mandatory/required item above is implemented and verified.
+- Re-run an independent review focused on this fix delta before calling the Phase
+  20–29 series commit-ready.
+
+Review questions:
+- Can any navigation/fetch/timer ordering strand the refresh control or repaint chrome
+  owned by another route?
+- Does the sticky-header solution work under measured scrolling without reintroducing
+  page overflow or awkward short-table containers?
+- Can selected/zero-count filters always be cleared, in both visual schemes and by
+  keyboard?
+- Is note rendering lossless and non-throwing for all specified shapes?
+- Can any decoded cursor still trigger a PostgreSQL cast 500, and are valid cursor
+  boundaries unchanged?
+- Do incident filters and progressive disclosures preserve keyboard focus through
+  success, empty, and error states?
+- Are all disclosures native, all scroll regions named validly, and full UUIDs directly
+  copyable without corrupting navigation values?
+- Are deferred L6/L9 and the intentional F7 scope decision documented honestly?

@@ -1,0 +1,79 @@
+Phase 26 - Status Scope, Time Formatting & Visual Signal
+
+Phase goal:
+Make dense status/time displays scan correctly: distinguish latest-run evidence from
+historical health, use human-scale relative times, and reserve row-level color for
+exceptions rather than painting entire issue-oriented tables.
+
+Background (from the 2026-07-21 UX review; revalidate before coding):
+- A data_acquisition group can show a green latest-run badge immediately beside a red
+  "24h: 940/1152 err" badge. Both are true but their scopes are not explicit.
+- fmtAge stops at hours, yielding values such as 20179h; grid rows show a full absolute
+  timestamp plus a redundant Age column.
+- Systems is an issue-only list, so every row tints. Incident/app-run views can also
+  become near-solid pink/orange. Connectivity tinting is sparse overall but fills the
+  first viewport because the API intentionally sorts failures first.
+- Dynamic rules such as "disable tint when >50% qualify" would make styling change as
+  data changes and are not acceptable; each view needs a deliberate semantic policy.
+
+Implementation scope:
+- Introduce tested pure time-format helpers in a browser/Node-compatible module:
+  seconds/minutes/hours, then days and years at documented boundaries; null/invalid and
+  future-clock-skew handling. Use relative-first text where it improves scanning and
+  preserve the full localized/ISO timestamp in a <time datetime> title or adjacent meta.
+- Label status scope explicitly. Grid row status becomes "latest" evidence; app-health
+  badge/text becomes "24h health" (or configured window). Do not overwrite one with the
+  other. Group rollup copy/accessibility labels must say what is rolled up.
+- Define a static per-view visual policy:
+  * issue-only Systems: badges/counts carry severity; remove blanket row tint;
+  * Incidents/app run history: use a restrained marker/border or tint only the state
+    that is exceptional for that view;
+  * connectivity: retain a deliberate current-failure marker consistent with Phase 20,
+    without treating stale historical rows as fresh failures;
+  * run/incident event timelines: retain type badges and reduce whole-row saturation
+    when every event has the same type.
+- Make status/filter chips read as controls: do not render a zero-count chip as a
+  productive filter unless disabled/hidden with clear semantics. Preserve aria-pressed;
+  full control accessibility is finalized in Phase 27.
+- Keep light/dark contrast and do not encode status solely by color.
+
+Explicit non-goals:
+- Do not change run-health calculations, connectivity freshness classification, SQL,
+  APIs, filters, or incident activity ordering.
+- No dynamic percentage-based tint rule.
+- No broad brand/theme redesign, design-token dependency, or CSS framework.
+- UUID/detail/mobile/favicon polish belongs to Phase 28.
+
+Expected files / layers:
+- public/index.html, a small public formatting helper, unit tests, and
+  public/grid-view.js tests if health-label output changes.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Boundary tests for relative times and null/future values.
+- Light/dark browser smoke across grid, connectivity, systems, incidents, app runs,
+  run detail, and incident events; verify status remains legible without row tint.
+
+Read-only / least-privilege constraints:
+- Presentation-only; no DB/query/grant changes.
+
+Schema assumptions to confirm live:
+- Existing timestamp fields and appHealthWindowHours; representative distributions
+  for each view so the fixed visual policy is reviewed against real density.
+
+Re-evaluation evidence (2026-07-21, after Phase 25):
+- appHealthWindowHours remains 24; the dashboard still juxtaposes latest status with
+  window health, so both labels need explicit scope.
+- Current issue density remains high (systems is issue-only; the first connectivity
+  page is deliberately current-failure-first; incident/event pages are homogeneous).
+  Use a fixed left-edge exception marker for row-bearing views, no Systems row tint,
+  and textual badges/counts as the primary signal.
+- Replace the grid's redundant absolute Last run + Age pair with one relative-first
+  `<time>` cell whose title retains localized and ISO exact time.
+
+Review questions:
+- Can latest status still be confused with the configured historical health window?
+- Are old ages readable without losing exact timestamp access?
+- Does any issue-oriented table still become a uniform warning-colored wall?
+- Are status differences conveyed by text/badges as well as color?
+- Are zero-count controls non-misleading and keyboard semantics preserved?

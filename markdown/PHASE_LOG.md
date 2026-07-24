@@ -8,6 +8,996 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 31 — Entity-First Incident Dashboard & Card Experience
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_31_entity_first_incident_dashboard.txt`
+
+Git Commit: Pending
+
+Review Artifacts:
+
+- Independent final-state review: `notes/review_phase_31.md`
+- Reproducible browser gate: `notes/phase-31-browser-validation.js`
+- Responsive captures: `/tmp/ops-dashboard-phase31-evidence/phase31-*.png`
+
+## Goals / Built
+
+- Made complete Phase 30 incident-by-SME summaries the principal dashboard. Bare hash
+  and legacy `#incidents` now show semantic, responsive entity cards; Jobs moved to
+  `#jobs`; the complete raw incident table moved to `#incident-list`.
+- Added `public/entity-view.js`: pure active/all filtering, active-scope severity/
+  category semantics, priority/latest/entity sorting, versioned preference
+  normalization, entity facets, 24-card slicing, compact metadata/provenance helpers,
+  and lossless decimal occurrence text. Eight focused tests cover it.
+- Added a persistent entity control/status shell and 24-card progressive grid. Cards
+  expose SME id, active/total incidents, worst active severity, relative `<time>` with
+  exact timestamp, oldest active age, explicit occurrences, three ordered categories
+  plus remainder, category provenance, and two app names plus remainder. Resolved-only
+  cards are quieter; severity uses a narrow edge and text badge, never a color wall.
+- Added reconciled summary tiles and a visible non-SME notice naming `__global__` and
+  `RTT00001`, with a deterministic link to the complete raw list.
+- Expanded route/return ownership for Entities, Jobs, Incident list, canonical
+  `#entity=`, and legacy `#system=`. The canonical entity route deliberately reuses the
+  existing bounded System signals controller in this phase; no incident workspace or
+  cross-source API was added.
+- Entities refresh atomically replaces the cached complete response only for the
+  current request generation. Late Entities/Jobs successes, failures, or warm-up paths
+  cannot repaint another route; the global refresh control always recovers.
+
+## Route Mapping
+
+| Before | Phase 31 canonical destination | Compatibility |
+| --- | --- | --- |
+| bare `#` (job dashboard) | bare `#` = Entities | Jobs preserved at `#jobs` |
+| `#incidents` (raw list) | `#incident-list` = raw list | `#incidents` remains a supported Entities alias |
+| `#system=<id>` | `#entity=<id>` for card entry | `#system=` remains a permanent working alias |
+| `from=dashboard` | `#jobs` | old intent preserved |
+| `from=incidents` | `#incident-list` | old intent preserved |
+
+New links use `from=entities`, `from=jobs`, and `from=incident-list`; scoped
+`entity:`, `system:`, `appruns:`, and `incident:` return tokens remain shape-validated.
+
+## Card / Filter Semantics
+
+- One card equals one `entityKind: "sme"` summary from the complete API. Default
+  activity is Active; All includes resolved-only history.
+- In Active mode, severity/category filters inspect `activeBySeverity` and category
+  `activeCount`. In All mode they inspect total metadata. Search is exact/partial,
+  case-insensitive SME id. Selected zero-count persisted values remain operable.
+- Priority is active first, worst active severity, active count, latest seen, entity id;
+  Latest and Entity sorts keep entity id as the final tie-break.
+- Summary tiles always mean complete SME/non-SME API totals. The polite status says
+  shown versus matching versus complete-response entity counts. Occurrences are never
+  labeled incidents.
+- Category provenance is compact but explicit: oracle-only is a dashed “oracle hint”;
+  mixed says “includes oracle”; classifier-only stays plain. Current live aggregate had
+  mixed but no oracle-only entity-category, so browser evidence uses the real mixed row
+  and pure tests cover the oracle-only branch.
+
+## Validation
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+docker run --rm ... node -e '<compile public JS and inline controller>'
+docker run --rm --network host ... node notes/phase-31-browser-validation.js
+git diff --check
+```
+
+- Full suite: 165/165 passed. All public helper files and the inline controller compile;
+  `git diff --check` passes.
+- Browser/live reconciliation: the first 24 of 174 active matches came from 229 complete
+  SME summaries; tiles reconciled to 229 SMEs / 174 active SMEs / 357 active incidents /
+  517 SME incidents / 12 non-SME incidents. Showing 48 then 72 cards kept those totals
+  unchanged and retained focus.
+- Keyboard: search, Active/All, severity, category, sorting, reset, show-more, entity
+  entry/return, raw category traversal/load-more, and native DA disclosure passed.
+  A selected persisted zero-count entity category remained clearable.
+- Routes/races: all 11 families (Entities, Jobs, run, Connectivity, acquisition, System
+  signals, legacy system, canonical entity, Incident list, incident, app run log) had
+  correct title/source/nav/body ownership and zero unexpected console/page errors.
+  Both slow Entities→Jobs and Jobs→Entities refresh races passed; loading, 503 warm-up,
+  healthy/filtered empty, and failure states stayed distinct.
+- Responsive: 390x844, 768x900, and 1440x900 in light/dark produced one/two/four card
+  columns with visible focus, wrapped navigation/controls, and no body/card overflow.
+  Jobs and Incident list also remained locally contained in all six combinations.
+  Mobile-light and desktop-dark captures were visually inspected.
+- Preserved Phase 29 guarantees: Jobs and Incident list sticky headers had 0 px movement
+  after 300 px local scroll; raw incident focus/load-more and native DA disclosure
+  passed. Port 8080 was untouched; the disposable app used port 18080.
+
+## Independent Review / Phase 32 Decision
+
+- `notes/review_phase_31.md` found no actionable Phase 31 implementation defect. The
+  hierarchy is genuinely entity-first, cards are operational summaries rather than
+  restyled table rows, non-SME groups remain discoverable, and the final state is ready
+  to commit (not committed per developer instruction).
+- Concrete remaining friction does satisfy Phase 32's entry gate: card→entity currently
+  replaces incident context with the reused System signals/connectivity view; reaching
+  the actual incident inventory requires backtracking to the global raw list, which has
+  no entity filter. This loses SME context and prevents direct comparison of the three
+  explicitly scoped sources.
+- Recommendation: **proceed with Phase 32 in a separately authorized phase** using its
+  bounded, paged, read-only design. Phase 32 was not implemented during this goal.
+
+## Commit Readiness
+
+- Phase 31 scope/non-goals, preserved views, deep links, accessibility, response truth,
+  browser/race/reconciliation gates, independent review, and documentation are complete.
+- No write, schema, grant, cache, environment, dependency, deployment, or producer
+  change was made in Phase 31. Ready to commit; no commit or push performed.
+
+---
+
+# Phase 30 — Incident Entity Summary Contract
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_30_incident_entity_summary_contract.txt`
+
+Git Commit: Pending
+
+Review Artifacts:
+
+- Review result: `notes/review_phase_30.md`
+- Live SQL/plan probe: `notes/phase-30-live-validation.js`
+- HTTP reconciliation: `notes/phase-30-api-validation.js`
+
+## Goals / Built
+
+- Added the smallest complete server-side SME card contract: one atomic, unbounded
+  grouped read of `incidents.incidents`, never a regrouped incident cursor page.
+- Added `lib/entities.js` with shared safe-id/entity classification, Phase 21 lifecycle
+  semantics, known-plus-other state/severity axes, bigint-safe occurrence strings,
+  category/source merging, app deduplication, deterministic ordering, and full
+  SME/non-SME reconciliation.
+- Added `GET /api/entities` with one handler-owned `asOf` and the shared sanitized error
+  path. The response contains 229 SME summaries under `entities` and complete `global`/
+  `other` producer summaries under `nonSmeEntities` at the recorded observation.
+- Added nine focused tests and reproducible live/API validation scripts. No frontend,
+  existing API, cache, schema, grant, environment, dependency, or deployment changed.
+- Re-evaluated future prompts before implementation. Phase 31 remains aligned; Phase
+  32's stale 1..168-hour System signals claim was corrected to the existing reviewed
+  1..48-hour cap. Phase 32 behavior remains unimplemented and conditional.
+
+## Schema Facts Confirmed (live DB)
+
+Observation: 2026-07-21 20:00:30 UTC as `ops_dashboard_ro`.
+
+- `incidents.incidents.entity` is non-null `varchar`; `apps` is nullable `text[]`;
+  occurrence count is nullable `bigint`; first/last times are nullable `timestamptz`;
+  assessment is `jsonb`; category/state/severity are nullable `varchar`; and
+  `category_source` is non-null `varchar`.
+- 529 incidents span 231 producer entities: 517 incidents across 229 SMEs, 11
+  `__global__` incidents, and one `RTT00001` incident. Every live SME is exactly eight
+  characters (`SME` plus digits) and satisfies the shared 1..64 safe-id contract.
+- Current vocabularies are states `open`/`recurring`/`resolved`, severities
+  `high`/`medium`/`info`, and sources `classifier`/`oracle`; reserved known values and
+  future `other` values remain explicit in the contract.
+- The API reconciled 529 total / 368 active incidents and 368805 occurrences. SME-only
+  summary: 229 entities, 174 with active work, 517 total / 357 active incidents, and
+  246206 occurrences. Non-SME: 12 total / 11 active and 122599 occurrences;
+  `__global__` remained visible (11/11, 122416) and `RTT00001` remained visible
+  (1/0, 183).
+- Mixed provenance is live and preserved: SME16380 has two apps and a `credentials`
+  category whose sources are both classifier and oracle.
+
+## Architecture / Performance / Safety
+
+- Read-only and least privilege hold: SELECT was true while INSERT/UPDATE/DELETE were
+  false on `incidents.incidents`; `incidents.pipeline_state` remained unreadable.
+- The SQL reads only `incidents.incidents`, contains no limit, interpolation, write,
+  cross-schema join, raw events, pipeline state, or verbose log. One query gives one
+  observation point and avoids N+1 behavior.
+- Exact `EXPLAIN (ANALYZE, BUFFERS)`: 327 grouped result rows from a 529-row tiny-table
+  scan, 6.425 ms execution, 198 shared hits, zero shared reads. Application query was
+  27 ms warm; live `/api/entities` requests were 68–84 ms, safely request-path sized.
+- `sum(bigint)` is cast to text in SQL and accumulated with `BigInt` only inside the
+  pure shaper, so the JSON contract always exposes decimal strings without precision
+  loss.
+
+## Validation / Review
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+docker run --rm ... node notes/phase-30-live-validation.js
+docker run --rm --network host ... node notes/phase-30-api-validation.js
+git diff --check
+```
+
+- Full suite: 155/155 passed (146 baseline plus nine Phase 30 tests). Focused helpers,
+  SQL text guards, server-route guard, and changed JS compilation passed.
+- Disposable port-18080 HTTP validation passed: stable complete entity ordering;
+  state/severity/incident reconciliation with `/api/incidents`; mixed provenance;
+  non-SME discovery; and 200 compatibility responses for health, Jobs, errors,
+  connectivity, systems, incident list, and incident detail. Port 8080 was untouched.
+- Structured review against `markdown/REVIEW_CHECKLIST.md` found no actionable issue.
+  Details are in `notes/review_phase_30.md`.
+- Problems encountered were validation-only: Docker access required the approved
+  runtime permission; a first inline probe had a quoting error before execution; and a
+  loopback-bound HTTP probe needed host-network mode. None changed application behavior.
+
+## Commit Readiness / Follow-Up
+
+- Phase 30 requirements, non-goals, schema proof, read-only boundary, reconciliation,
+  performance, validation, and review are complete. Ready to commit, but not committed
+  per developer instruction.
+- Phase 31 may now consume `/api/entities`. It must not add Phase 32 cross-source/entity
+  workspace scope.
+
+---
+
+# Phase 29 — UX Review Fix Round & Commit-Readiness Closure
+
+Date: 2026-07-21
+
+Status: Completed (independent final-state review closed with Phase 31)
+
+Prompt: `prompts/prompt_29_ux_review_fix_round.txt`
+
+Git Commit: Pending
+
+Review Artifacts:
+
+- Source findings: `notes/review_ux_implementation_phases_20_28_claude_findings_2026-07-21.md`
+- Reproducible browser gate: `notes/phase-29-browser-validation.js`
+- Fix-delta handoff: `notes/review_handoff_phase_29.md`
+
+## Built / Finding Closure
+
+- **H1:** global refresh always resets after its captured handler settles; a delayed
+  incident refresh followed by Systems navigation leaves the new route's control live.
+- **M1–M3:** bounded table scrollports restore measured sticky headers while retaining
+  narrow horizontal containment; the selected-chip ring is high-contrast; an active
+  zero-count persisted filter remains enabled and clearable.
+- **M4/L7:** note rendering preserves arrays, nested/unknown data, falsy and distinct
+  promoted identifiers, BigInt/circular direct-call values, and never emits accidental
+  `[object Object]` or interpreted HTML.
+- **M5–M6:** dashboard 503/error writes are route-owned, one warm-up retry chain is
+  allowed, hidden dashboard links retain dashboard return context, and cached summary
+  chrome restores immediately on return.
+- **M7/M9:** incident category focus survives repeated refetches; data_acquisition's
+  inline-run disclosure is a native Space/Enter button with accurate aria-expanded.
+- **M8:** cursor timestamps require canonical four-digit UTC ISO with year 0001–9999;
+  ids are BigInt-bounded to PostgreSQL signed bigint. Invalid values fail before SQL
+  with the existing generic 400.
+- **L1–L5/L8/L10/L11:** scroll regions have valid region semantics; routed polite
+  status nodes persist and update after insertion; progressive controls restore focus
+  and preserve open disclosures; removed Age sort state migrates; incident totals say
+  “overall”; helper code is readable; compact UUIDs have explicit copy plus manual
+  fallback.
+- **Deferred consciously:** L6 API truncation metadata needs a separate additive
+  contract; L9 time rounding remains the tested product policy. F7 continues to keep
+  latest status and 24h health separate and explicitly labeled.
+
+## Architecture / Safety
+
+- No query, schema, index, grant, dependency, write path, route family, or API response
+  shape changed. `ops_dashboard_ro`, bound SQL, partition filters, and the existing
+  bounded data_acquisition exception remain intact.
+- M8 is server-side input validation only. It narrows accepted opaque cursors to the
+  exact safe domain already emitted by the server.
+
+## Validation
+
+- Full suite: **146/146 pass**; all browser helpers and the inline controller compile;
+  `git diff --check` passes.
+- Live isolated API: the reproduced signed-year, RFC-1123, bigint-overflow, and year-0
+  cursors return generic 400. A full valid walk returns 529/529 unique incidents over
+  six pages.
+- Reproducible Playwright gate passes: sticky geometry (`scrollTop=300`, header delta
+  0), refresh race, two-request-only 503 retry, immediate dashboard summary, three
+  sequential category selections with focus, native DA Space disclosure, selected and
+  active-zero chips, disclosure focus/state, UUID copy/manual fallback, all nine route
+  families, and 390/768/1440 light/dark containment.
+- Mobile and desktop-dark captures were visually inspected. Port 8080 was untouched;
+  validation used the disposable port-18080 service.
+
+## Commit Readiness
+
+- Implementation and validation complete. The original fix-delta handoff and evidence
+  remain preserved. The independent final-state Phase 31 review subsequently inspected
+  the combined Phase 20–31 state and found no actionable regression; its strengthened
+  browser pass re-proved the highest-risk Phase 29 route/race/sticky/focus/disclosure
+  guarantees on the new route hierarchy. The pending current-state commit gate is
+  therefore closed by `notes/review_phase_31.md`.
+
+---
+
+# Phase 28 — Responsive Containment & Final UX Polish
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_28_responsive_polish.txt`
+
+Git Commit: Pending
+
+## Built / Decisions
+
+- Every static and generated table now sits in a keyboard-focusable, touch-friendly
+  local overflow container; page chrome no longer scrolls horizontally on narrow
+  viewports. Control rows wrap with mobile-sized inputs while desktop density remains.
+- Grid, acquisition-subrun, and app-run UUIDs display a consistent compact prefix,
+  while their href, title, and accessible name retain the exact full identifier.
+- Run-note formatting promotes system/job fields once, removes only those promoted
+  keys from a shallow copy, and preserves unknown fields as safe text/JSON.
+- Added a dependency-free adaptive SVG favicon. No API, query, schema, grant, route,
+  ordering, status, or filter semantics changed.
+
+## Validation
+
+- Full suite: 138/138 tests; `git diff --check` passes.
+- Playwright at 390x844, 768x900, and 1440x900 light/dark confirmed body/table
+  containment, keyboard focus, captions, and exact compact-UUID link fidelity.
+  Post-review correction: that run did not measure sticky geometry; Phase 29 restored
+  a real vertical scroll context and asserted the header position during scrolling.
+- Mobile and desktop-dark captures were visually inspected; controls remain usable,
+  the operator-dense desktop layout is unchanged, and the favicon returns HTTP 200.
+- Requirements/read-only/review/validation complete; ready to commit.
+
+---
+
+# Phase 27 — Native Table & Control Accessibility
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_27_table_accessibility.txt`
+
+Git Commit: Pending
+
+## Built / Validation
+
+- Sort headers remain scoped column headers with child buttons and aria-sort; group
+  rows remain rows with native disclosure buttons. No role=button/link rows remain.
+- All nine data tables have captions and scoped headers. Selected filters stay enabled
+  and toggleable with aria-pressed; focus/selection styling works in both schemes.
+- Visible cadence explanation replaces title-only help; loading messages are concise
+  polite status regions. All navigation remains native anchors.
+- Keyboard/browser smoke passed sorting, Space disclosure, selected-filter clear,
+  captions/scopes across routes, visible cadence help, and live status semantics.
+  Frontend-only; ready to commit.
+- Post-review correction: the DA inline-runs anchor and grid chip's white active ring
+  were missed in this validation; Phase 29 converted/fixed and browser-tested both.
+
+---
+
+# Phase 26 — Status Scope, Time Formatting & Visual Signal
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_26_status_time_semantics.txt`
+
+Git Commit: Pending
+
+## Built / Decisions
+
+- `public/time-view.js` provides tested seconds→minutes→hours→days→years formatting,
+  null/invalid handling, future-skew clamp, and exact ISO/local titles for `<time>`.
+- Grid uses one relative-first Last run column (redundant Age removed), labels latest
+  status explicitly, and labels historical badges `24h health`.
+- Fixed visual policy: narrow exception edge markers replace full-row tint; Systems
+  has no row tint and uses textual colored counts; connectivity marks current failures
+  only; event/status badges remain textual. Zero-count status chips/tiles are disabled.
+
+## Validation
+
+- Focused 34 tests pass. Light/dark browser smoke verifies seven aligned grid columns,
+  relative+exact time, explicit scope labels, disabled zero controls, transparent
+  Systems rows, and current-failure edge markers. Presentation-only; ready to commit.
+
+---
+
+# Phase 25 — Route-Aware Navigation, Context & Refresh
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_25_route_aware_chrome.txt`
+
+Git Commit: Pending
+
+## Built
+
+- Pure `public/routes.js` parses all nine hash families, validates return context,
+  and owns title/source/nav/parent metadata.
+- Global chrome now has Dashboard nav, accurate per-route schema source,
+  document.title, aria-current parent nav, and one route-aware refresh button.
+- Generated run/system/incident links carry safe `from` tokens; deterministic
+  breadcrumbs replace generic/blind back links while legacy deep links retain safe
+  fallbacks and run timestamp hints.
+- Request-generation guards keep delayed routes from repainting current view bodies.
+  Post-review correction: dashboard warm-up/error meta paths and cached-summary return
+  timing were not covered here; Phase 29 added route ownership and race validation.
+
+## Validation
+
+- Route helper tests pass; browser direct-loaded all nine families and verified
+  title/source/nav, per-route refresh request, system/incident/app-run return paths,
+  compound hint preservation, and delayed-systems→incidents chrome stability.
+- No API/query/grant change. Ready to commit.
+
+---
+
+# Phase 24 — Lean, Keyset-Paginated Incident List
+
+Date: 2026-07-21
+
+Status: Completed
+
+Prompt: `prompts/prompt_24_incident_list_scaling.txt`
+
+Git Commit: Pending
+
+## Built
+
+- Split the incident list into an eight-field lean projection while leaving detail
+  shaping/query complete. Oracle provenance remains mandatory.
+- Added opaque base64url cursor encode/decode with strict rank/timestamp/bigint
+  validation. Invalid cursors return 400.
+- Added exact keyset order/predicate: activity ASC, severity ASC, last_seen DESC NULLS
+  LAST, id DESC; default page 100, clamp 25..200, limit+1 next-cursor detection.
+- UI loads/deduplicates guarded pages explicitly; every filter starts page one and
+  stale in-flight pages cannot contaminate a new filter generation.
+
+## Schema Facts Confirmed (live)
+
+- 529 unique ids; 0 NULL last_seen currently; 0 invalid category_source values.
+  Schema-null timestamps are still handled by SQL/cursor design.
+
+## Performance / Compatibility
+
+- Unpaginated baseline: 745,259 bytes / 529 rows / 128 ms measured. First lean page:
+  19,769 bytes / 100 rows (97.3% smaller) and 178 ms cold; filtered page 14,546 bytes /
+  75 rows / 11 ms. API additions: pageSize/nextCursor; count is page count.
+- EXPLAIN: first page 2.0 ms, next page 1.2 ms; small-table seq scan + top-N sort, no
+  new index justified. Read-only grants unchanged.
+
+## Validation
+
+- 131/131 tests. Two live 100-row pages exactly equal the first 200-row baseline with
+  zero duplicates; an equal-last_seen boundary returned the expected lower id.
+- Browser: 100→200 unique rows, active ordering preserved, filters reset to page one,
+  delayed stale page ignored, 79-row category end state honest.
+- Detail endpoint remains complete; invalid cursor returns sanitized 400.
+
+## Commit Readiness
+
+- Requirements/read-only/schema/review/validation: complete; ready to commit.
+
+---
+
+# Phase 23 — Shared Large-List Controls
+
+Date:
+2026-07-21
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_23_large_list_controls.txt`
+
+Git Commit:
+Pending
+
+## Goals
+
+- Bound initial DOM work and add honest, view-specific navigation for the large
+  connectivity, systems, acquisition, and loaded run-log lists.
+
+## Built
+
+- `public/list-view.js`: pure order-preserving text/enum/flag filters plus 50-row
+  slicing; focused Node tests.
+- Global sticky table headers use the system Canvas color in light/dark schemes.
+- Connectivity filters system/detail/category/phase, source, and Phase 20 current
+  state; Systems filters system/app, has-errors vs warn-only, and cross-app;
+  Acquisition filters system/modality/manufacturer, source, and failures-only.
+- Those three complete-response views initially render 50 matching rows, reveal 50
+  more at a time, reset the slice on filter changes, expose counts/reset/empty states,
+  and never reorder the server response.
+- Run logs add explicitly loaded-only run-id/job-type search and a visible Job type
+  column while preserving server status filtering and keyset load-more.
+
+## Schema Facts Confirmed (live API)
+
+- Connectivity: 539 snapshot rows; Systems: 209 rows (server cap 500, no truncation
+  flag); Acquisition: 202 grouped rows; data_acquisition runs: 50 loaded with a
+  non-null keyset cursor. Payload fields matched all planned controls.
+
+## Important Decisions
+
+### Fifty-row client slices
+
+Decision: Fully fetched lists start and advance by 50; run logs remain server-paged.
+
+Reason: Fifty compact rows cover multiple desktop viewports while bounding current
+initial DOM volume by roughly 4x–11x. Run-log completeness has different semantics.
+
+Tradeoff: This is progressive rendering, not virtualization; operators can still
+render the full response deliberately.
+
+## Architecture Notes
+
+- Read-only/query/API impact: none; frontend-only and dependency-free.
+- Ordering: `Array.filter` then `slice`, so server worst/newest-first order survives.
+- Completeness: counts say response rows/snapshot rows; loaded-run search says loaded.
+  Systems only warns about possible truncation if its 500-row cap is actually reached.
+- Deployment: static refresh only; no grant/restart-specific data contract.
+
+## Validation
+
+- Passed: 129/129 tests; inline script syntax check.
+- Passed live browser: connectivity 50→100 and 339 stale/68 MMB-stale filters;
+  systems and acquisition 50→100 plus combined filters; runs 50→100 via exactly one
+  keyset request and loaded-only search via zero requests.
+- Confirmed client filters/reset/show-more add zero API requests, sticky positioning
+  computes in dark mode, and server order is unit-pinned.
+- Failed: none. Initial hash-navigation smoke awaited network idle rather than the
+  async route render and then used an unscoped duplicate Source label; the harness was
+  corrected with DOM waits and view-scoped labels.
+
+## Follow-Up Tasks
+
+- Phase 24: server-side incident projection and keyset pagination.
+
+## Commit Readiness
+
+- Requirements implemented: yes.
+- Read-only / least-privilege rules hold: yes.
+- Schema assumptions confirmed live: yes.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
+# Phase 22 — Progressive Disclosure for Dense Feeds
+
+Date:
+2026-07-21
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_22_dense_feed_disclosure.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- UX-review source and tall-page captures: `notes/review_handoff_ux_review_2026-07-21.md`
+  and `notes/ux-review-2026-07-21/`
+
+## Goals
+
+- Make the dashboard error feed and incident event detail scannable at first paint.
+- Preserve complete source text and honest fetched/total counts behind accessible,
+  explicit disclosure controls.
+
+## Built
+
+- Added `public/feed-view.js`, a DOM-free browser/Node helper for first-meaningful-line
+  previews, 180-character single-line bounds, 25-row increments, and honest count text.
+- Dashboard error feed now renders 25 of the fetched 100 events initially, exposes
+  bounded “show more” steps, and gives every truncated message an aria-expanded
+  show-full/show-less button. Row-wide synthetic links were removed; each row has a
+  native run link with the existing partition hint.
+- Error-feed success-empty and load-failure paths now render distinct explicit table
+  messages and summary labels.
+- Incident sample messages use the same disclosure control. Incident events render 25
+  initially and reveal 25 at a time without refetching; the heading separately states
+  shown, fetched, and lifetime occurrence counts.
+- All log/incident strings remain `textContent`-only; no HTML interpretation was added.
+
+## Schema Facts Confirmed (live API/data)
+
+- Fresh error feed: 100 rows, all with run ids; 41 multiline err_msg values and 59
+  note-only fallbacks. Median rendered source length 260 characters, max 688, proving
+  that one-line JSON also needs a character bound.
+- Incident 17100: occurrenceCount 740, sample message 590 characters, 100 newest-first
+  returned events at eventLimit 100.
+- `/api/errors` still returns lookbackDays and raw event fields; incident detail still
+  returns eventLimit and occurrenceCount. No API/query change was needed.
+
+## Important Decisions
+
+### Bound both source lines and visual volume
+
+Decision: previews use the first non-empty source line and cap it at 180 characters;
+feeds initially show 25 rows and advance by 25.
+
+Reason: Multiline stacks caused the original tall pages, but note-fallback JSON is often
+one long line. Solving only one dimension leaves the other unbounded.
+
+Tradeoff: Wrapped 180-character previews can still occupy more than one visual line in
+narrow message columns, while the exact full string remains one button away.
+
+### Explicit links replace interactive rows
+
+Decision: message disclosure and run navigation are separate native controls.
+
+Reason: Expanding text must not navigate, and real anchors support keyboard, open-in-new-
+tab, copy-link, and standard semantics.
+
+Tradeoff: The run target is a smaller click area, but its behavior is predictable.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none; frontend-only consumption.
+- Query / partition-pruning impact: none; existing endpoints and caps retained.
+- Performance impact: first DOM paint drops from 100 dense rows to 25 in each feed;
+  later increments reuse already-fetched arrays.
+- Security impact: source strings only reach `textContent`; aria controls use generated
+  local ids.
+- Deployment impact: static file change only, served after app/static refresh; no grant.
+- API compatibility: unchanged.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+# inline browser script node --check
+# isolated app + Playwright live and mocked-response smoke
+```
+
+Results:
+
+- Passed: 124/124 tests, including preview, truncation, increments, and count truth.
+- Passed: browser dashboard 25→50 rows, 25 native run links, no synthetic row roles;
+  mouse and Enter expansion/collapse leave the route unchanged.
+- Passed: incident 17100 25→50 rows with “newest 100 of 740 occurrences” preserved.
+- Passed: mocked empty response reports no WARN/ERROR in 2 days; mocked 500 reports
+  load failure; no console errors.
+- Failed: none. One initial Playwright assertion used a dynamic text-filtered locator
+  that resolved the next “show full” button after its label changed; the test locator
+  was stabilized by aria-controls and rerun cleanly. Product code was correct.
+
+## Review Notes
+
+Source: self-review against the prompt, UX evidence, and review checklist.
+
+Critical issues: none.
+
+Deferred findings:
+
+- Shared sticky headers/list filters/progressive rows remain Phase 23.
+- Full table semantics and captions remain Phase 27.
+
+## Follow-Up Tasks
+
+- Phase 23: shared controls for the remaining large list views.
+
+## Commit Readiness
+
+- Requirements implemented: yes.
+- Read-only / least-privilege rules hold: yes.
+- Time-windowed queries partition-pruned: unchanged.
+- Schema assumptions confirmed live: yes.
+- Review findings addressed or deferred: yes.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
+# Phase 21 — Incident Triage Ordering & Category Controls
+
+Date:
+2026-07-21
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_21_incident_triage_controls.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- UX-review source: `notes/review_handoff_ux_review_2026-07-21.md`
+- Indexed evidence: `notes/ux-review-2026-07-21/`
+
+## Goals
+
+- Put active operational work ahead of resolved history without hiding history.
+- Make the existing incident category filter discoverable, counted, composable, and
+  honest about empty results.
+
+## Built
+
+- `INCIDENTS_LIST_SQL` now orders by the producer-confirmed activity class, then
+  severity, `last_seen DESC`, and `id DESC` for a stable tie-break. Unknown future
+  states sink after all known states.
+- The existing incident rollup now groups by severity, state, and category once.
+  `shapeRollup` preserves the two existing axes and adds deterministic
+  `byCategory: [{category,count}]`, sorted by count then name; all axes reconcile.
+- The Incidents UI adds a labeled count-backed category selector, visible active
+  filter summary, and clear-all action. Category, severity, and state refetch together;
+  normalized API filters are echoed back into UI state; zero-result combinations show
+  an explicit message.
+- Oracle category provenance continues through every incident row/detail rendering;
+  the category selector is only a taxonomy facet and makes no per-incident claim.
+
+## Schema Facts Confirmed (live DB and producer)
+
+- Producer vocabulary: `open`, `recurring`, `acknowledged`, `resolved`, `suppressed`.
+  `open`/`recurring`/future `acknowledged` are active and closeable;
+  `resolved`/future `suppressed` are inactive or terminal. The engine currently writes
+  only open, recurring, and resolved.
+- Live distribution at implementation: 529 total = 360 open / 8 recurring / 161
+  resolved; 18 categories, led by `rsync_io_timeout` 186 and `unknown` 79.
+- Indexes remain state+last_seen, severity+last_seen, BRIN(last_seen), PK(id), and the
+  fingerprint/entity unique index. No category index exists; the table is currently
+  small enough that sequential scan plus CASE-ranked sort is appropriate.
+
+## Important Decisions
+
+### Activity is a class, not an order among active states
+
+Decision: open, recurring, and acknowledged share rank 0; resolved and suppressed
+share rank 1; unknown states rank 2. Severity and recency decide within each class.
+
+Reason: A resolved high incident is history, while an open medium incident needs
+attention now. `acknowledged` still represents a live, auto-closeable problem;
+`suppressed` is producer-terminal.
+
+Tradeoff: The CASE expression requires a small in-memory sort instead of directly
+matching one existing index. Live cost is about 3.7 ms for all 529 projected rows.
+
+### Category counts are global facets
+
+Decision: Category counts, like existing severity/state tiles, describe the complete
+table while `count`/“showing” describes the current combination.
+
+Reason: Stable global counts keep controls navigable when a combination has zero rows
+and preserve the established rollup contract.
+
+Tradeoff: A category option's count is not the count remaining after another filter;
+the explicit “showing N” result count carries that contextual truth.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none; existing SELECT-only surface.
+- Query impact: one extra GROUP BY key and an activity CASE sort over 529 rows; no
+  partitioned table or JSON detoast involved.
+- Performance impact: live EXPLAIN ANALYZE — rollup 1.2 ms; unfiltered list 3.7 ms;
+  combined list 0.8 ms. Disposable HTTP API measured 4–95 ms.
+- Security impact: category remains shape-normalized and bound as `$3`; no SQL
+  interpolation. UI strings use `textContent`/option text.
+- Deployment impact: restart required to load server/static changes; validation used
+  an isolated disposable instance and left the deployed service untouched.
+- API compatibility: additive `rollup.byCategory`; existing rollup keys, filter echo,
+  incident rows, and detail routes remain compatible.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+# read-only live GROUP BY/list comparison and EXPLAIN ANALYZE through the app role
+# disposable app + Playwright interaction smoke on :18080
+```
+
+Results:
+
+- Passed: 120/120 tests, including activity vocabulary, category rollup ordering and
+  reconciliation, bound SQL filters, explicit activity ranks, and stable id order.
+- Passed: all 368 active live rows precede the first inactive row; default first row
+  is open/high and final row resolved/info.
+- Passed: all rollup axes sum to 529; 18 categories; medium+open+unknown returns 75
+  matching rows; a valid zero-result combination returns count 0 without error.
+- Passed: browser category/tiles composition, clear-all, zero state, 17 rendered oracle
+  hints, 19 selector options including “all,” and no console errors.
+- Failed: none. Two initial browser assertions used response completion instead of DOM
+  render completion and one stale expected count; the smoke harness was corrected and
+  rerun cleanly. Product code was not implicated.
+
+## Review Notes
+
+Source: independent implementation self-review against `markdown/REVIEW_CHECKLIST.md`
+and the UX evidence.
+
+Critical issues: none.
+
+Accepted fixes: none beyond the implemented scope.
+
+Deferred findings:
+
+- Incident projection/pagination remains Phase 24 scope.
+- Shared table accessibility remains Phase 27 scope.
+
+## Problems Encountered
+
+- Problem: the deployed service was intentionally not restarted.
+  Resolution: validated the exact working tree in an isolated full app container
+  connected with the production read-only role.
+
+## Follow-Up Tasks
+
+- Phase 22: progressive disclosure for the two dense event feeds.
+
+## Commit Readiness
+
+- Requirements implemented: yes.
+- Read-only / least-privilege rules hold: yes.
+- Time-windowed queries partition-pruned: not applicable; incidents table is not
+  partitioned and no time window was added.
+- Schema assumptions confirmed live: yes.
+- Review findings addressed or deferred: yes.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
+# Phase 20 — Connectivity Freshness Truth
+
+Date:
+2026-07-21
+
+Status:
+Completed
+
+Prompt:
+`prompts/prompt_20_connectivity_freshness_truth.txt`
+
+Git Commit:
+Pending
+
+Review Artifacts:
+
+- UX-review source: `notes/review_handoff_ux_review_2026-07-21.md`
+- Indexed screenshots and reproduction script: `notes/ux-review-2026-07-21/`
+
+## Goals
+
+- Stop presenting a retained connectivity probe result as current operational truth.
+- Preserve the raw last result while making source-specific freshness, current state,
+  data age, and record age independently inspectable.
+
+## Built
+
+- `lib/connectivity.js`: source-specific 45-minute freshness budgets; additive
+  `lastResult`, `freshness`, `operationalState`, and `freshnessBudgetMs`; stable
+  current-offline-first ordering followed by stale history; future-clock skew clamps
+  to zero age.
+- Connectivity rollups now reconcile `online + offline + unknown + stale = total`
+  independently for HHM and MMB. Raw `status` remains compatibility-preserving last
+  result; only `operationalState` claims current truth.
+- `public/index.html`: explicit Current state / Last result / Data age / Record age
+  columns, stale badges and counts, current-only red failure treatment, and grid/system
+  summaries that do not count stale failures as live outages.
+- Contract documentation and architecture principles now describe the retained
+  snapshot and its two clocks.
+
+## Schema Facts Confirmed (live DB and producer)
+
+- `alert.offline_hhm_conn` and `alert.offline_mmb_conn` are retained latest-per-system
+  snapshots, not an inventory of currently scheduled systems.
+- Both acquisition groups run every 30 minutes. The producer refreshes `inserted_at`
+  on successful and failed probes, but refreshes `capture_datetime` only on success.
+  Therefore `inserted_at` is the currentness clock and `capture_datetime` is data age.
+- The producer's existing offline report applies a 45-minute stale threshold. The
+  dashboard adopts that contract for both current HHM and MMB schedules (30-minute
+  cadence plus 15-minute grace).
+- At verification time the snapshot contained 539 rows; the 1-hour acquisition set
+  contained 200 matching source/system pairs. The remaining 339 retained rows were
+  historical/retired and must remain visible as stale rather than current offline.
+
+## Important Decisions
+
+### Current operational state is derived, not copied
+
+Decision: A row whose `inserted_at` age is at most 45 minutes has its raw last result
+as its current operational state. Older, missing, or invalid check times produce
+`STALE`, regardless of whether the last result was ONLINE or OFFLINE.
+
+Reason: Probe failures update the checked clock without updating the capture clock;
+using capture age would falsely mark current failures stale. Conversely, retained
+rows can keep an old OFFLINE result indefinitely and must not inflate live outage
+counts.
+
+Tradeoff: Retired equipment remains visible in a large stale tail until an inventory
+contract exists. This is honest and auditable, but Phase 23's list controls become
+important for navigation.
+
+## Architecture Notes
+
+- Read-only / least-privilege impact: none; existing `SELECT` grants only.
+- Query / partition-pruning impact: none; existing connectivity queries unchanged.
+- Performance impact: request-path shaping/sorting remains linear over 539 small rows;
+  disposable live route smoke returned in about 53 ms.
+- Security impact: none; no new input or write path.
+- Deployment impact: application restart required to load the new server/static code;
+  validation used an isolated disposable instance because the deployed service was
+  deliberately not disrupted.
+- API compatibility: additive per-row fields; `status` remains the raw last result.
+  Rollup adds `unknown` and `stale`, while `online`/`offline` now mean current records.
+
+## Validation
+
+Commands run:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:lts node --test
+# live classifier and /api/connectivity checks through the existing app image/network
+# disposable full-app smoke on :18080 plus Playwright browser assertions/screenshot
+```
+
+Results:
+
+- Passed: 118/118 tests, including exact freshness boundary, missing/invalid/future
+  timestamps, stale historical success/failure, ordering, and rollup reconciliation.
+- Passed: live API returned 539 rows and reconciling rollups; all additive fields were
+  present; current failures sorted before current successes and stale history.
+- Passed: browser rendered 539 rows with Current state and Last result columns, 200
+  current (162 online / 38 offline) and 339 stale, with no console errors.
+- Failed: none.
+
+Manual / smoke tests:
+
+- Visually inspected the connectivity view at desktop width. Current failures are
+  prominent; stale history is neutral; the summary and paired clocks are legible.
+- Confirmed the data-acquisition grid badge reports current HHM/MMB failures separately
+  from stale records.
+
+## Review Notes
+
+Source: independent implementation self-review against the UX evidence and the repo's
+review checklist.
+
+Critical issues: none.
+
+Accepted fixes: none beyond the implemented scope.
+
+Deferred findings:
+
+- Historical/retired-row filtering and progressive rendering remain Phase 23 scope.
+- Broader status/time visual consistency remains Phase 26 scope.
+
+## Problems Encountered
+
+- Problem: restarting the deployed service would disrupt the current instance and was
+  not approved during validation.
+  Resolution: ran the exact built app in an isolated disposable container against the
+  live read-only database, including Playwright browser validation; left deployment
+  state untouched.
+
+## Follow-Up Tasks
+
+- Phase 21: incident activity ordering and category controls.
+- Phase 23: make the retained stale connectivity tail easy to navigate without hiding
+  it.
+
+## Commit Readiness
+
+- Requirements implemented: yes.
+- Read-only / least-privilege rules hold: yes.
+- Time-windowed queries partition-pruned: not applicable; no query change.
+- Schema assumptions confirmed live: yes.
+- Review findings addressed or deferred: yes.
+- Validation recorded: yes.
+- Ready to commit: yes.
+
+---
+
 # Phase 19 — Incidents View
 
 Date:

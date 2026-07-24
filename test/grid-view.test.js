@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel, STATUS_RANK } = require("../public/grid-view");
+const { sortJobs, groupJobs, groupRollupStatus, filterJobs, summarize, healthLabel, normalizeSortKey, chipDisabled, STATUS_RANK } = require("../public/grid-view");
 
 // A small grid fixture. for clarity each field is set only where a test reads it.
 const JOBS = [
@@ -112,6 +112,18 @@ test("STATUS_RANK orders ERROR worst to INFO best", () => {
   assert.ok(STATUS_RANK.SUCCESS < STATUS_RANK.INFO);
 });
 
+test("normalizeSortKey migrates the removed age column to lastRun", () => {
+  assert.equal(normalizeSortKey("age"), "lastRun");
+  assert.equal(normalizeSortKey("bogus"), "lastRun");
+  assert.equal(normalizeSortKey("issues"), "issues");
+});
+
+test("chipDisabled keeps an active zero-count filter operable", () => {
+  assert.equal(chipDisabled(0, false), true);
+  assert.equal(chipDisabled(0, true), false);
+  assert.equal(chipDisabled(3, false), false);
+});
+
 // --- Phase 9: filterJobs + summarize ----------------------------------------
 
 const FJOBS = [
@@ -180,9 +192,9 @@ test("summarize: empty input is all zeros", () => {
 
 // --- Phase 12: healthLabel ---------------------------------------------------
 
-test("healthLabel: errored/runs with the window prefix", () => {
-  assert.equal(healthLabel({ runs: 2207, errored: 1914, warned: 1345 }, 24), "24h: 1914/2207 err · 1345 warn");
-  assert.equal(healthLabel({ runs: 10, errored: 0, warned: 0 }, 24), "24h: 0/10 err");
+test("healthLabel: errored/runs with explicit health-window scope", () => {
+  assert.equal(healthLabel({ runs: 2207, errored: 1914, warned: 1345 }, 24), "24h health: 1914/2207 err · 1345 warn");
+  assert.equal(healthLabel({ runs: 10, errored: 0, warned: 0 }, 24), "24h health: 0/10 err");
 });
 
 test("healthLabel: nothing to show -> empty string", () => {
@@ -192,7 +204,7 @@ test("healthLabel: nothing to show -> empty string", () => {
   assert.equal(healthLabel({ errored: 3 }, 24), ""); // runs missing/NaN
 });
 
-test("healthLabel: omits the window prefix when not a positive number", () => {
-  assert.equal(healthLabel({ runs: 5, errored: 1 }, undefined), "1/5 err");
-  assert.equal(healthLabel({ runs: 5, errored: 1 }, 0), "1/5 err");
+test("healthLabel: labels health even without a numeric window", () => {
+  assert.equal(healthLabel({ runs: 5, errored: 1 }, undefined), "health: 1/5 err");
+  assert.equal(healthLabel({ runs: 5, errored: 1 }, 0), "health: 1/5 err");
 });

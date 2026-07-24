@@ -1,0 +1,78 @@
+Phase 28 - Responsive Containment & Final UX Polish
+
+Phase goal:
+Finish the reviewed low-risk polish after the information architecture and semantics
+are stable: contain wide tables on small screens, improve control wrapping, shorten
+repetitive identifiers without hiding them, remove duplicated detail text, and give the
+host-internal app a recognizable browser tab.
+
+Background (from the 2026-07-21 UX review):
+- At 390px the entire page scrolls horizontally and controls/chips wrap awkwardly.
+  Tables are inherently wide, but their overflow should be locally contained so page
+  chrome and controls remain usable.
+- Full UUID link text dominates several tables.
+- Run detail noteText prints system/job as a human header and immediately repeats the
+  same keys in raw JSON.
+- The app has no favicon. The existing dependency-free, near-free light/dark approach
+  should remain intact.
+
+Implementation scope:
+- Wrap data tables in a reusable overflow container with touch-friendly horizontal
+  scrolling, visible focus, and no whole-page horizontal overflow. Preserve sticky
+  headers from Phase 23 and captions/accessibility from Phase 27.
+- Make control bars responsive using wrapping/grid rules and sensible minimum sizes;
+  keep labels attached to controls and avoid one-chip-per-line layouts where space
+  permits. Do not hide operational columns solely because the viewport is narrow.
+- Display run UUIDs in a consistent compact form (for example first 8 characters)
+  while preserving the full value in href, title, copy behavior, and accessible name.
+  Never truncate identifiers used as query parameters or stored state.
+- Refactor note detail formatting so promoted system/job keys appear once; render the
+  remaining note fields as compact safe JSON/text. Preserve unknown keys and textContent
+  safety. Unit-test null, scalar, promoted-only, and mixed-note shapes.
+- Add a small repo-native favicon (SVG is appropriate) and link it from the document.
+  Keep it legible in light/dark browser chrome; no external asset or image dependency.
+- Re-run desktop light/dark screenshots to ensure responsive rules did not regress the
+  1440px operator view.
+
+Explicit non-goals:
+- No mobile-first redesign, card conversion of every table, hidden critical columns,
+  framework, or dependency.
+- No status/ordering/filter/navigation/accessibility semantic changes; prior phases own
+  those behaviors.
+- No changes to API identifiers, DB data, or URLs.
+
+Expected files / layers:
+- public/index.html, optional pure formatting helper + tests, and public/favicon.svg.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- node --check on changed frontend scripts.
+- Browser screenshots at 390x844, a tablet width, and 1440x900 in light/dark mode;
+  verify document body does not overflow horizontally, each table remains scrollable,
+  focus is visible, and full UUID values remain reachable/correct.
+
+Read-only / least-privilege constraints:
+- Frontend/static assets only; no DB/query/grant changes.
+
+Schema assumptions to confirm live:
+- Representative note-object shapes across apps and every location where run ids are
+  displayed versus passed as values.
+
+Re-evaluation evidence (2026-07-21, after Phase 27):
+- Run ids render as full UUID text in the grid, data_acquisition subruns, and app-run
+  table; other routes already use compact “view” link text. Only those three displays
+  should compact, while href/query/state retain the exact UUID.
+- Live notes include null/scalar possibilities plus objects with `system_id`/`sme`,
+  `job_id`, message/status fields, and unknown producer keys. Promote system/job,
+  delete only those promoted keys from a shallow copy, and preserve every other key
+  in safe JSON.
+- All nine tables now have captions/scopes, so one wrapper helper can contain dynamic
+  tables without altering their semantic structure; the two static dashboard tables
+  use the same wrapper markup.
+
+Review questions:
+- Is horizontal overflow contained to the relevant table rather than the whole page?
+- Are all controls usable at 390px without losing labels or selected state?
+- Can an operator still access/copy the full UUID and do links retain exact ids?
+- Are promoted note keys shown once while all other fields remain available and safe?
+- Did desktop density, sticky headers, dark mode, and accessibility survive the polish?

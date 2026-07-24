@@ -1,0 +1,238 @@
+Phase 32 - Conditional Entity Workspace & Incident Drill-Down Integration
+
+Phase goal:
+If post-Phase-31 evidence shows that operators still need to navigate across multiple
+views to understand one SME, complete the entity-focused architecture by turning
+canonical `#entity=<id>` into one read-only workspace that correlates that entity's
+incident inventory, current connectivity, and recent cross-app signals. Reuse the
+existing paged incident and system-detail contracts rather than creating an unbounded
+detail response. Keep `#system=<id>` as a permanent legacy alias and make all equipment
+links canonical.
+
+Entry decision gate (mandatory before implementation):
+- This phase is conditional, not the automatic successor to Phase 31. Do not implement
+  it merely because the prompt exists.
+- First complete and independently review Phase 31 with representative live data and
+  operator workflows. Record concrete remaining friction in `markdown/PHASE_LOG.md` or
+  a review handoff.
+- Proceed only if that evidence shows a unified entity workspace materially improves
+  investigation over the card dashboard plus existing incident/system/connectivity
+  views. Valid evidence includes repeated cross-view navigation, lost SME context,
+  unclear return paths, or inability to compare the three explicitly scoped sources.
+- If the cards plus existing detail routes are sufficient, mark Phase 32 Deferred with
+  the evidence and stop. Deferral is a successful product decision, not an incomplete
+  implementation.
+
+Prerequisites:
+- Phase 30 `/api/entities` is complete/reconciled, Phase 31 has made Entities the
+  default card dashboard with working `#entity=` route parsing, and the entry decision
+  gate above has been satisfied and documented.
+- Preserve the Phase 20 connectivity truth model, Phase 21 incident activity semantics,
+  Phase 24 cursor validation/order, Phase 25/29 route-generation ownership, and Phase
+  31 route hierarchy.
+
+Implementation scope:
+
+1. Add a safe entity scope to the existing incident list contract
+   - Extend `GET /api/incidents` with optional `entity=<safe-id>`. Omitted means the
+     existing global list exactly; no existing caller or response field may regress.
+   - Normalize entity input in the server library using the same safe id/classification
+     helper as Phase 30. Bind it as a SQL parameter. Invalid, overlong, empty-explicit,
+     or tampered values return the existing generic 400 and never reach SQL.
+   - Add the entity predicate inside the ranked Phase 24 list query without changing
+     its activity/severity/time/id ORDER BY or cursor tuple. Severity, state, category,
+     entity, limit, and cursor must compose.
+   - Keep the existing global rollup explicitly labeled/global for compatibility. Add a
+     small `scope`/`scopedTotal` response field (or equivalent additive contract) so an
+     entity detail can state how many matching incident records exist without
+     confusing that value with the global rollup or current page length.
+   - Preserve 100-row keyset pages, duplicate-safe load more, cursor fail-closed
+     validation, and generic errors. Do not add an unbounded “all incidents for entity”
+     query merely because the current live maximum is 12.
+
+2. Add one entity-context endpoint by composing existing bounded reads
+   - Add `GET /api/entities/:id?windowHours=<n>` with the existing strict safe-id
+     validation and the existing systems window clamp (default 24h, 1..48h). The
+     48-hour ceiling is deliberate: the Phase 19 review measured the 168-hour
+     request-path query over budget.
+   - In parallel where safe, obtain:
+       - the one Phase 30 incident-entity summary (use a bound entity predicate or a
+         pure lookup over the small grouped result; no string interpolation);
+       - current decorated connectivity records using Phase 20 logic;
+       - the existing partition-pruned `systemDetail` recent `(app,type,func)` signal
+         breakdown over `util.app_run_logs.warn_error_logs` only.
+   - Return one thin context response:
+
+     {
+       "asOf": "...",
+       "entity": "SME01139",
+       "entityKind": "sme",
+       "incidentSummary": {},
+       "connectivity": [],
+       "signalWindowHours": 24,
+       "signals": []
+     }
+
+   - Support safe non-SME producer ids if they have incident data; identify their kind
+     honestly and do not fabricate SME connectivity. A safe id with data in incidents,
+     connectivity, or recent signals is a valid entity workspace even if one of the
+     other sources is empty. Return 404 only when all three sources are empty.
+   - Do not include raw incident events, verbose logs, or every incident row in this
+     context endpoint. The paged `/api/incidents?entity=` call owns incident records,
+     and `/api/incidents/:id` remains the bounded full assessment/event drill-down.
+
+3. Build the canonical entity workspace
+   - Upgrade `#entity=<id>` from Phase 31's reused system view into a dedicated semantic
+     page. `#system=<id>` parses/renders the same page as a legacy alias without forced
+     redirect or lost `from=` context.
+   - Header: entity id, entity-kind label when not SME, deterministic breadcrumb to its
+     supplied safe origin/default Entities, exact as-of time, and a concise scope legend.
+   - Incident section first:
+       - summary of active/total incidents, worst active severity, latest/oldest-active
+         observation, occurrences, apps, and category/provenance metadata;
+       - active-first incident rows/cards from `/api/incidents?entity=...`, preserving
+         Phase 24 ordering, with severity/state/category+source, occurrence count,
+         first/last seen, and a real link to `#incident=<id>&from=entity:<id>`;
+       - use the existing 100-row page contract and native load-more control; distinguish
+         scoped total, loaded rows, and displayed rows. Preserve focus and deduplicate
+         across pages.
+   - Connectivity section second:
+       - one compact row/card per HHM/MMB source with raw last result, derived current
+         state, checked-at/record age, freshness/stale reason, and category where
+         applicable;
+       - no row means “no connectivity record”; stale OFFLINE is not current OFFLINE.
+   - Recent signals section third:
+       - existing `(app,type,func)` breakdown, clearly labeled “recent run-log signals
+         (last N hours)” rather than incident history or current status;
+       - latest run remains a native run-drill-down link with exact UUID and timestamp
+         hint/copy behavior.
+   - Each section has independent loading/error/empty text and a persistent polite
+     status region. A failure in recent signals must not erase already available
+     incident/connectivity context; if the endpoint is kept combined, render its
+     sanitized whole-response failure honestly.
+
+4. Canonicalize entity links throughout the app
+   - Change SME/system links in Entities cards, raw incident list/detail, Connectivity,
+     Acquisition by system, and System signals to `#entity=<id>` with accurate safe
+     return tokens.
+   - Keep all inbound `#system=` bookmarks and `system:<id>` return tokens working.
+     Add `entity:<id>` to `safeFrom`/`fromHref` and ensure invalid ids cannot create a
+     route or DOM injection.
+   - Entity and legacy-system detail routes own the Entities nav item. The old
+     `#systems` list remains available as “System signals”; do not delete its API or
+     route because it answers the distinct recent-window question.
+   - Incident-detail returns to the exact entity workspace when opened there, raw
+     incident list when opened there, and Entities default only when no safe origin is
+     present.
+
+5. Preserve route generation and partial-state safety
+   - Use separate monotonic request generations for entity context and paged entity
+     incidents, reset/dedupe cursors on entity/navigation changes, and abort/ignore late
+     completions.
+   - Navigating SME A -> SME B -> another route while requests are delayed must never
+     mix A summary, B incidents, stale connectivity, chrome, or breadcrumbs.
+   - Global refresh reloads the current entity context and resets/reloads its first
+     incident page atomically from the user's perspective; it cannot strand the button
+     or spawn duplicate load-more chains.
+
+Expected files / layers:
+- `db/queries.js` for the bound optional entity predicate and, if chosen, a bound
+  single-entity summary helper; no new data source.
+- `lib/incidents.js`, `lib/entities.js`, `test/incidents.test.js`, and
+  `test/entities.test.js` for normalization, shaping, reconciliation, and cursor/filter
+  composition.
+- `server.js` for the additive entity-scoped list and `GET /api/entities/:id`.
+- `public/routes.js`, `test/routes.test.js`, `public/entity-view.js`,
+  `test/entity-view.test.js`, and `public/index.html` for canonical detail routing,
+  rendering, links, state, and accessibility.
+- `markdown/PROMPTS.md` and `markdown/PHASE_LOG.md` when implementing/logging.
+
+Explicit non-goals:
+- No entity write-back, acknowledgement/suppression actions, owner assignment,
+  remediation, alerting, notifications, auth, or incident-engine change.
+- No replacement/removal of `/api/systems`, `#systems`, `/api/incidents/:id`, Jobs,
+  Connectivity, Acquisition, or run drill-down.
+- No unbounded raw-event or verbose-log read, frontend framework, dependency, cache,
+  DB schema/index/DDL/grant/env change, or cross-repository work.
+- No attempt to infer that one run-log signal caused an incident. The page correlates
+  evidence by entity and labels time/source scope; it does not assert causality.
+- No merge of connectivity current state, recent run-log health, and incident lifecycle
+  into one universal “health” badge.
+
+Read-only / least-privilege constraints:
+- Preserve `ops_dashboard_ro`. All new SQL is SELECT-only with bound entity/window/
+  filter/cursor parameters. No writes, DDL, grants, dynamic SQL, or producer changes.
+- `systemDetail` remains partition-pruned by `inserted_at`, maximum 48h, and reads
+  `warn_error_logs` only. Never read `verbose_log` for this page.
+- Incident records come from `incidents.incidents`; raw events remain accessible only
+  through the existing bounded/indexed incident detail endpoint.
+- All producer strings render via `textContent`/safe attributes.
+
+Schema/data assumptions to confirm live before implementation:
+- Optional entity filtering preserves the Phase 24 keyset plan/order and uses an
+  available entity/index path adequately at current table size.
+- Reconfirm per-entity incident cardinality, safe id shapes, apps/category provenance,
+  and examples with partial source coverage (incidents only, connectivity only, signals
+  only, non-SME incidents).
+- Reconfirm the 24h/48h `systemDetail` query remains partition-pruned and bounded.
+- Confirm whether a valid entity can have zero matching rows across all three sources
+  so 404/empty semantics are evidence-based.
+
+Required unit validation:
+- Entity filter normalization/400 behavior, bound SQL predicate, and all combinations
+  with severity/state/category/cursor/limit.
+- A full entity-filtered cursor walk has stable Phase 24 order, no duplicate/omitted
+  rows, and a scoped total matching direct SQL. Global calls remain byte-shape
+  compatible except documented additive fields.
+- Context shaping for SME, global, other, incidents-only, connectivity-only,
+  signals-only, no-data 404, null/unusual fields, and source-specific empty states.
+- Route/return round trips for `#entity=`, legacy `#system=`, `entity:<id>`,
+  `system:<id>`, incident detail, unsafe ids, encoded values, and every prior route.
+- Pure display grouping/order/provenance/time-scope labels and load-more deduplication.
+
+Required live/integration validation:
+- Use a disposable copy on port 18080; do not restart port 8080.
+- Compare `/api/incidents?entity=<SME>` scoped total and a full cursor walk to direct
+  SQL. Re-run the Phase 29 malformed cursor probes with the entity filter and confirm
+  generic 400/no SQL execution.
+- Compare `/api/entities/<SME>` incident summary, connectivity, and 24h signals to the
+  three existing source queries. Test partial-source and non-SME examples.
+- Browser: enter entities from the main card grid, raw incidents, connectivity,
+  acquisition, and system signals; open an incident/run and return to the exact origin.
+  Verify legacy `#system=` bookmarks render the same workspace.
+- Race test SME A -> SME B -> Jobs with delayed success/error responses; no mixed
+  entity data, chrome, focus, or stuck refresh/load-more control.
+- At 390/768/1440 light/dark: incident records, connectivity, and recent signals remain
+  readable/contained, sections and status are accessible, and no body overflow occurs.
+- Full regression over all routes/APIs with zero page/console errors.
+
+Validation commands:
+- `docker run --rm -v "$PWD":/w -w /w node:lts node --test`
+- Compile all `public/*.js` and the inline `public/index.html` script in `node:lts`.
+- `git diff --check` and `git status --short`.
+- Live EXPLAIN/smoke as `ops_dashboard_ro`, plus Playwright/browser checks on the
+  disposable port-18080 app.
+
+Documentation / completion gate:
+- Add a Phase 32 log only after entity-filter pagination, context reconciliation,
+  canonical/legacy routes, source-scope labeling, race tests, and responsive/a11y gates
+  pass. Record exact endpoint shapes and evidence that the three sources are correlated
+  but not causally conflated.
+- Mark Phase 32 Completed only after the entry evidence is recorded and an independent
+  review confirms the entire journey:
+  main Entities dashboard -> entity workspace -> incident/run detail -> exact return,
+  plus raw/non-SME discovery and legacy-link compatibility.
+
+Review questions:
+- Can an entity's incident list ever be partial without the UI saying loaded/scoped
+  counts and offering load more?
+- Is every entity value normalized, bound, and rejected before SQL when invalid, while
+  legacy safe links continue to work?
+- Does the page clearly separate incident lifecycle, current connectivity freshness,
+  and recent run-log signals instead of manufacturing one health truth or causality?
+- Can `__global__`/other producer entities be inspected honestly without pretending
+  they are SME equipment?
+- Do all cross-links and return tokens preserve exact origin, and can delayed requests
+  ever mix two entities or repaint another route?
+- Are all reads already granted, bounded/partition-pruned where needed, no-N+1,
+  read-only, and free of verbose-log/raw-event expansion on the workspace path?

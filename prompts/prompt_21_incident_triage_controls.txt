@@ -1,0 +1,92 @@
+Phase 21 - Incident Triage Ordering & Category Controls
+
+Phase goal:
+Make the default Incidents view prioritize active work and let operators navigate
+the incident taxonomy. Resolved high-severity history must not bury active
+medium-severity incidents, and the API's existing category filter must become a
+discoverable, count-backed UI control.
+
+Background (from the 2026-07-21 UX review; revalidated immediately after Phase 20):
+- 529 incidents span 18 categories. rsync_io_timeout is the largest category at
+  186 rows, but 343 incidents span 17 other categories, so category navigation is
+  useful even if the current rsync event subsides.
+- Current ORDER BY ranks severity before state. Live data placed 108 resolved/high
+  incidents ahead of all 220 open/medium incidents; the first open/medium incident
+  appeared at row 210.
+- GET /api/incidents already accepts a normalized category query parameter, but the
+  UI never sends it and the rollup contains only severity/state counts.
+- category_source='oracle' remains a hint, not a diagnosis; its provenance rendering
+  is a non-negotiable Phase 19 rule.
+
+Implementation scope:
+- Apply the producer-confirmed activity classes: `open`, `recurring`, and the reserved
+  future `acknowledged` state are active/closeable; `resolved` and the reserved future
+  `suppressed` state are inactive/terminal. Active rows must sort before inactive rows;
+  an unknown future state sinks after both known classes. Within an activity class,
+  sort by severity, last_seen DESC, and a stable id tie-breaker. Keep resolved incidents
+  available.
+- db/queries.js: apply the activity-first stable ordering with bound filters. Add a
+  category rollup query (or extend the existing rollup safely) that returns every
+  category and count. incidents.* is not partitioned; keep the request-path query
+  small/indexed and measure it.
+- lib/incidents.js: pure shaping for byCategory with deterministic ordering and
+  defensive defaults. Preserve categorySource on every list/detail item.
+- server.js: expose byCategory additively in the rollup and continue echoing the
+  normalized applied category filter.
+- public/index.html: add a labeled category control with counts, a clear-all action,
+  and visible active-filter state. It must compose with severity and state filters,
+  refetch from the first page/list, and include category in the "showing"/empty-state
+  logic. Avoid rendering 18 undifferentiated tiles; a select or compact ranked list is
+  appropriate for the existing house style.
+- Add focused tests for activity ordering, category normalization/rollup, combined
+  filters, zero-result behavior, and oracle provenance survival.
+
+Explicit non-goals:
+- No incident writes, acknowledgement/suppression workflow, notifications, or
+  incident-engine changes.
+- No list pagination or lean list projection; Phase 24 owns incident scaling.
+- No event-detail disclosure changes; Phase 22 owns dense feeds.
+- Do not remove resolved incidents from the API or make category text look diagnosed
+  when categorySource is oracle.
+- No framework/build step or new client dependency.
+
+Expected files / layers:
+- db/queries.js, lib/incidents.js, test/incidents.test.js, server.js,
+  public/index.html, and docs only if live state semantics differ from the producer
+  contract.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Live GROUP BY category and severity/state comparison against API rollups.
+- Live EXPLAIN for the final list/rollup query as ops_dashboard_ro.
+- Browser smoke: default list surfaces active incidents before resolved history;
+  category + severity + state compose; clearing returns the default ordering.
+
+Read-only / least-privilege constraints:
+- Existing SELECT on incidents.incidents only; no grant change and no writes.
+- Every filter remains normalized and bound; never interpolate category/state/order.
+
+Schema assumptions to confirm live:
+- Current state vocabulary and which states are operationally active/terminal;
+  category diversity; indexes supporting the final order/filter; no categorySource
+  contract drift.
+
+Re-evaluation evidence (2026-07-21, after Phase 20):
+- Producer contract (`incident-engine/docs/incidents-schema.md` and
+  `domain/state.js`) confirms active/closeable = open, recurring, acknowledged;
+  inactive/terminal = resolved, suppressed. The engine currently writes only open,
+  recurring, and resolved.
+- Live state distribution: open 360 / recurring 8 / resolved 161; acknowledged and
+  suppressed remain reserved and absent. Live category distribution still has 18
+  categories led by rsync_io_timeout 186.
+- Existing indexes are `(state, last_seen DESC)`, `(severity, last_seen DESC)`, BRIN
+  on last_seen, the PK, and the fingerprint/entity unique index. The CASE-ranked sort
+  may sort this small table; measure the final plan rather than claiming index order.
+
+Review questions:
+- Can a resolved incident still outrank an active incident merely because severity is
+  higher?
+- Is the state/activity ranking explicit, tested, and agreed with incident-engine?
+- Do category counts reconcile with the same table the list filters?
+- Do all filter combinations reset cleanly and report loaded/shown counts honestly?
+- Is oracle provenance preserved in every category rendering?

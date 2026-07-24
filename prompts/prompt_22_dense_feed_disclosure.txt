@@ -1,0 +1,77 @@
+Phase 22 - Progressive Disclosure for Error & Incident Feeds
+
+Phase goal:
+Keep the dashboard and incident detail scannable at current volume by rendering
+compact summaries first and revealing long messages/events on demand, with honest
+empty and capped states.
+
+Background (verified in the 2026-07-21 UX review; revalidated after Phase 21):
+- The dashboard error feed requests 100 events and renders every multiline err_msg
+  in full, producing a page about 15,500px tall. In the reviewed sample, 50/100
+  messages were multiline and the median source length was about 590 characters.
+- Incident detail fetches at most 100 events but renders all 100 long rows at once;
+  the captured page was about 24,000px tall for a 736-occurrence incident.
+- The zero-error path leaves an empty table with no explicit healthy-state message.
+- Error rows are currently synthetic row-wide links. Message expansion must not
+  create invalid nested interactive controls; use a real explicit run link/action.
+
+Implementation scope:
+- Error feed: render the first meaningful line of each message by default; provide an
+  accessible per-message expand/collapse control for the complete text. Bound the
+  preview length as well as its line count because note-fallback JSON is often one
+  long line. Render an
+  initial 25 events, then reveal in bounded increments or via an explicit "show more"
+  control up to the already-fetched 100. Report "showing N of M fetched" honestly.
+- Replace error-feed row-wide synthetic navigation with an explicit real run link so
+  expanding a message never unexpectedly navigates and normal link behaviors work.
+- Error feed empty state: when the API returns zero events, say that no WARN/ERROR
+  events occurred in the response's lookbackDays; distinguish success-empty from
+  load failure.
+- Incident detail: keep assessment/meta visible, compact the sample message by
+  default, render an initial bounded subset of events (for example 25), and reveal
+  more without refetching until the server-provided eventLimit is exhausted. Preserve
+  "newest N of occurrenceCount" truth; never imply every historical event was loaded.
+- Preserve textContent-only rendering for all log/incident-derived strings. Expanded
+  stack traces remain wrapped monospace and must not introduce innerHTML.
+- Extract small pure helpers for first-line/summary text and bounded page slices when
+  that improves testability; follow the dual browser/Node export pattern already used
+  by public/grid-view.js.
+
+Explicit non-goals:
+- No API/query/grant change; retain /api/errors and incident event server caps.
+- No global list search/sticky headers/pagination; Phases 23-24 own large lists.
+- No redesign of the run drill-down's 500-event cap.
+- No framework, virtual-scroller dependency, or mutation of source logs/incidents.
+
+Expected files / layers:
+- public/index.html; optionally one small public pure-helper module + unit tests.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- node --check on any changed/extracted frontend scripts.
+- Browser smoke with multiline, single-line, note-fallback, and empty error responses;
+  incident detail with occurrenceCount greater than returned events; keyboard expand,
+  collapse, show-more, and explicit run-link navigation.
+
+Read-only / least-privilege constraints:
+- Frontend-only consumption of existing read-only endpoints. No DB or role changes.
+
+Schema assumptions to confirm live:
+- /api/errors includes lookbackDays and events may use err_msg or note; incident detail
+  returns eventLimit, occurrenceCount, and events newest-first.
+
+Re-evaluation evidence (2026-07-21, after Phase 21):
+- A fresh 100-row error response has 41 multiline `err_msg` values and 59 note-only
+  fallbacks; median rendered source length is 260 characters and max 688. All 100
+  rows carry run ids. The single-line note JSON confirms previews need a character
+  bound in addition to first-line extraction.
+- Incident 17100 currently has occurrenceCount 740, sample-message length 590, and a
+  newest-first response of exactly 100 events at eventLimit 100. The response shape
+  still carries all fields assumed by this phase.
+
+Review questions:
+- Is the first screen useful without expanding any stack trace?
+- Are fetched, shown, and total occurrence counts never conflated?
+- Can expand/collapse be used without triggering run navigation?
+- Is the zero-event state explicit and distinguishable from a failed fetch?
+- Is every untrusted string still rendered as text, never HTML?

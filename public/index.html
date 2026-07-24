@@ -4,16 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ops-dashboard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <style>
     :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
-    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 1.5rem; }
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 1.5rem; overflow-x: hidden; }
     h1 { font-size: 1.2rem; margin: 0 0 .25rem; }
     .muted { color: #888; font-size: .8rem; }
     section { margin-top: 1.5rem; }
     table { border-collapse: collapse; width: 100%; }
     th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #8883; white-space: nowrap; }
     th { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: #888; }
+    thead th { position: sticky; top: 0; z-index: 1; background: Canvas; }
     .badge { display: inline-block; padding: .05rem .45rem; border-radius: .7rem; font-size: .72rem; font-weight: 600; color: #fff; }
     .SUCCESS { background: #2e7d32; }
     .WARN    { background: #ed6c02; }
@@ -25,12 +27,14 @@
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     button { font: inherit; padding: .2rem .6rem; cursor: pointer; }
     a { color: inherit; }
-    /* Error-feed rows link into the run drill-down. */
-    tr.clickable { cursor: pointer; }
-    tr.clickable:hover { background: #8881; }
-    /* WARN/ERROR rows stand out in the run timeline. */
-    tr.row-WARN  { background: #ed6c0218; }
-    tr.row-ERROR { background: #c6282818; }
+    :is(a, button, input, select):focus-visible { outline: 3px solid #1565c0; outline-offset: 2px; }
+    button[aria-pressed="true"] { box-shadow: 0 0 0 2px #1565c0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    /* Static exception marker: badges carry the text; a narrow edge avoids color walls. */
+    tr.row-WARN td:first-child  { border-left: 3px solid #ed6c02; }
+    tr.row-ERROR td:first-child { border-left: 3px solid #c62828; }
+    td.count-error { color: #c62828; font-weight: 700; }
+    td.count-warn { color: #b45309; font-weight: 700; }
     td.detail { white-space: pre-wrap; max-width: 50ch; font-family: ui-monospace, monospace; font-size: .76rem; color: #888; }
     .run-meta { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-size: .82rem; margin: .5rem 0 1rem; }
     .run-meta dt { color: #888; }
@@ -38,14 +42,12 @@
     .run-msg { margin: 1rem 0; font-size: .9rem; }
     .cap-note { margin: .8rem 0; }
     /* Grid controls + grouping/sorting (Phase 8). */
-    .controls { display: flex; gap: .8rem; align-items: center; margin: .4rem 0 .6rem; font-size: .8rem; color: #888; }
+    .controls { display: flex; flex-wrap: wrap; gap: .6rem .8rem; align-items: center; margin: .4rem 0 .6rem; font-size: .8rem; color: #888; }
     .controls select { font: inherit; }
-    th[data-sort-key] { cursor: pointer; user-select: none; }
-    th[data-sort-key]:hover { color: #aaa; }
+    th[data-sort-key] button { border: 0; background: none; color: inherit; padding: 0; text-transform: inherit; letter-spacing: inherit; font-weight: inherit; }
     th .sort-ind { margin-left: .25rem; font-size: .7rem; }
-    tr.group-head { cursor: pointer; }
-    tr.group-head:hover td { background: #8882; }
     tr.group-head td { background: #8881; font-weight: 600; }
+    .group-toggle { border: 0; background: none; padding: 0; font-weight: 600; }
     tr.group-head .disclosure { display: inline-block; width: 1em; color: #888; }
     tr.group-head .grp-count { color: #888; font-weight: 400; margin-left: .4rem; }
     tr.group-head .badge { margin-left: .5rem; }
@@ -57,9 +59,22 @@
     .controls .spacer { flex: 1; }
     .chips { display: inline-flex; gap: .3rem; flex-wrap: wrap; }
     .chip { font: inherit; cursor: pointer; border: 0; opacity: .45; }
-    .chip.active { opacity: 1; box-shadow: 0 0 0 2px #fff6; }
+    .chip.active { opacity: 1; box-shadow: 0 0 0 2px #1565c0; }
     #updated { font-variant-numeric: tabular-nums; }
     .controls label { display: inline-flex; align-items: center; gap: .3rem; }
+    .table-scroll { width: 100%; max-width: 100%; max-height: min(70vh, 48rem); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+    .table-scroll:focus-visible { outline: 3px solid #1565c0; outline-offset: 2px; }
+    .run-id-wrap { display: inline-flex; align-items: center; gap: .35rem; }
+    .copy-run { padding: .05rem .3rem; font-size: .72rem; }
+    .copy-fallback { width: 12ch; font: .76rem ui-monospace, monospace; }
+    .app-chrome { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .45rem; }
+    @media (max-width: 600px) {
+      body { padding: .8rem; }
+      .controls { align-items: stretch; }
+      .controls label { flex: 1 1 13rem; }
+      .controls input[type="search"], .controls select { min-width: 0; max-width: 100%; width: 100%; }
+      .chips { flex: 1 1 100%; }
+    }
     /* Incidents view (Phase 19): severity/state badges, provenance, tiles. */
     .sev-critical, .sev-high { background: #c62828; }
     .sev-medium { background: #ed6c02; }
@@ -78,18 +93,57 @@
     .tile b { display: block; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
     .tile .muted { font-size: .72rem; }
     button.tile { cursor: pointer; }
-    button.tile[aria-pressed="true"] { box-shadow: 0 0 0 2px #fff6; }
+    button.tile[aria-pressed="true"] { box-shadow: 0 0 0 2px #1565c0; }
     .reasons { margin: .3rem 0 .6rem 1.1rem; padding: 0; font-size: .85rem; }
     .reasons li { margin: .15rem 0; }
     .action-note { border-left: 3px solid #2e7d32; padding: .3rem .6rem; margin: .6rem 0; font-size: .88rem; background: #2e7d3212; }
+    /* Entity-first incident dashboard (Phase 31). */
+    .entity-scope { max-width: 80ch; margin: .25rem 0 .65rem; }
+    .entity-grid { list-style: none; margin: .8rem 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); gap: .8rem; }
+    .entity-card { height: 100%; border: 1px solid #8884; border-left: 4px solid #9e9e9e; border-radius: .55rem; padding: .75rem .85rem; background: Canvas; }
+    .entity-card.edge-critical, .entity-card.edge-high { border-left-color: #c62828; }
+    .entity-card.edge-medium { border-left-color: #ed6c02; }
+    .entity-card.edge-low { border-left-color: #607d8b; }
+    .entity-card.edge-info, .entity-card.edge-other { border-left-color: #9e9e9e; }
+    .entity-card.resolved-only { opacity: .78; }
+    .entity-card h3 { margin: 0 0 .35rem; font-size: 1rem; }
+    .entity-card .card-priority { margin: 0 0 .55rem; }
+    .entity-card dl { display: grid; grid-template-columns: max-content 1fr; gap: .16rem .65rem; margin: 0; font-size: .8rem; }
+    .entity-card dt { color: #888; }
+    .entity-card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .entity-tags { display: flex; flex-wrap: wrap; gap: .25rem .45rem; align-items: center; }
+    .entity-category { overflow-wrap: anywhere; }
+    .entity-category.cat-mixed { border-bottom: 1px dotted #888; cursor: help; }
+    .non-sme-notice { border: 1px solid #8884; border-radius: .5rem; padding: .55rem .7rem; margin: .7rem 0; background: #8881; }
+    #entity-more { margin-top: .8rem; }
   </style>
 </head>
 <body>
   <h1>ops-dashboard <span class="muted" id="meta"></span></h1>
-  <div class="muted">read-only view of <code>util.app_run_logs</code> &middot; <button id="refresh">refresh</button> &middot; <a href="#connectivity">connectivity</a> &middot; <a href="#systems">systems</a> &middot; <a href="#incidents">incidents</a></div>
+  <div class="muted app-chrome">read-only view of <code id="source-label">incident-engine · incidents.incidents</code> &middot; <button id="refresh">refresh</button> &middot; <a id="nav-entities" href="#">Entities</a> &middot; <a id="nav-incident-list" href="#incident-list">Incident list</a> &middot; <a id="nav-jobs" href="#jobs">Jobs</a> &middot; <a id="nav-connectivity" href="#connectivity">Connectivity</a> &middot; <a id="nav-systems" href="#systems">System signals</a></div>
 
-  <!-- Dashboard view: job grid + error feed. Hidden while a run drill-down is open. -->
-  <div id="dashboard">
+  <!-- Default view: complete incident summaries, one card per SME entity. -->
+  <section id="entities-view">
+    <h2 style="font-size:1rem;margin-bottom:.2rem">Entities</h2>
+    <p class="muted entity-scope">One card represents one SME entity. Incident counts are distinct problems; occurrences are repeated observed events.</p>
+    <div id="entity-summary" class="tiles" aria-label="Entity incident summary"></div>
+    <div class="controls" id="entity-controls">
+      <label>Search <input id="entity-search" type="search" placeholder="SME id" autocomplete="off" /></label>
+      <label>Activity <select id="entity-activity"><option value="active">Active</option><option value="all">All</option></select></label>
+      <label>Severity <select id="entity-severity"></select></label>
+      <label>Category <select id="entity-category"></select></label>
+      <label>Sort <select id="entity-sort"><option value="priority">Priority</option><option value="latest">Latest seen</option><option value="entity">Entity id</option></select></label>
+      <button id="entity-reset" type="button">reset</button>
+    </div>
+    <p class="muted entity-scope">In Active mode, severity and category match active incidents only. In All mode, they match any incident on the entity.</p>
+    <p id="entities-status" class="run-msg" role="status" aria-live="polite">Loading entity summaries…</p>
+    <aside id="non-sme-notice" class="non-sme-notice" aria-label="Non-SME incident groups" hidden></aside>
+    <ul id="entity-cards" class="entity-grid" aria-label="SME incident cards"></ul>
+    <button id="entity-more" type="button" hidden>show more entities</button>
+  </section>
+
+  <!-- Jobs view: preserved job grid + error feed at #jobs. -->
+  <div id="dashboard" hidden>
     <section>
       <h2 style="font-size:.95rem">Job grid</h2>
       <div class="controls">
@@ -102,23 +156,24 @@
           </select>
         </label>
         <span id="status-chips" class="chips" role="group" aria-label="filter by status"></span>
+        <span class="muted">? CADENCE = no configured schedule</span>
         <span class="spacer"></span>
         <span class="muted" id="updated"></span>
         <label class="muted"><input type="checkbox" id="autorefresh" checked /> auto-refresh</label>
       </div>
-      <table id="grid"><thead><tr>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Scrollable latest job runs"><table id="grid"><caption class="sr-only">Latest scheduled job runs</caption><thead><tr>
         <th data-sort-key="app">App</th><th data-sort-key="job">Job</th>
-        <th data-sort-key="status">Status</th><th data-sort-key="lastRun">Last run</th>
-        <th data-sort-key="age">Age</th><th data-sort-key="duration">Duration</th>
+        <th data-sort-key="status">Latest status</th><th data-sort-key="lastRun">Last run</th>
+        <th data-sort-key="duration">Duration</th>
         <th data-sort-key="issues">Issues</th><th>Run id</th>
-      </tr></thead><tbody></tbody></table>
+      </tr></thead><tbody></tbody></table></div>
     </section>
 
     <section>
-      <h2 style="font-size:.95rem">Error feed <span class="muted">(recent WARN/ERROR &middot; click a row for the run)</span></h2>
-      <table id="errors"><thead><tr>
-        <th>When</th><th>App</th><th>Type</th><th>Func</th><th>Message</th>
-      </tr></thead><tbody></tbody></table>
+      <h2 style="font-size:.95rem">Error feed <span class="muted" id="error-feed-summary">(recent WARN/ERROR)</span></h2>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Scrollable recent error events"><table id="errors"><caption class="sr-only">Recent warning and error events</caption><thead><tr>
+        <th>When</th><th>App</th><th>Type</th><th>Func</th><th>Message</th><th>Run</th>
+      </tr></thead><tbody></tbody></table></div>
     </section>
   </div>
 
@@ -146,36 +201,352 @@
   <!-- Incident detail: one incident's assessment + raw events. Populated by showIncident(). -->
   <section id="incident-view" hidden></section>
 
-  <!-- Pure grid transforms (sort/group/roll-up); exposes window.GridView. -->
+  <!-- Pure browser/Node helpers; no build step. -->
   <script src="grid-view.js"></script>
+  <script src="entity-view.js"></script>
+  <script src="feed-view.js"></script>
+  <script src="list-view.js"></script>
+  <script src="routes.js"></script>
+  <script src="time-view.js"></script>
   <script>
-    const fmtAge = (ms) => {
-      if (ms == null) return "—";
-      const s = Math.round(ms / 1000);
-      if (s < 90) return s + "s";
-      const m = Math.round(s / 60);
-      if (m < 90) return m + "m";
-      return Math.round(m / 60) + "h";
-    };
+    const fmtAge = TimeView.age;
     const fmtDur = (ms) => (ms == null ? "—" : ms < 1000 ? ms + "ms" : (ms / 1000).toFixed(1) + "s");
     const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
     const cell = (text, cls) => { const td = document.createElement("td"); if (cls) td.className = cls; td.textContent = text; return td; };
+    const headCell = (text) => { const th = document.createElement("th"); th.scope = "col"; th.textContent = text; return th; };
+    const timeNode = (iso) => { const v = TimeView.instant(iso); const t = document.createElement("time"); t.textContent = v.relative; t.title = v.title; if (v.iso) t.dateTime = v.iso; return t; };
+    const timeCell = (iso) => { const td = document.createElement("td"); const v = TimeView.instant(iso); const t = document.createElement("time"); t.textContent = v.relative; t.title = v.title; if (v.iso) t.dateTime = v.iso; td.appendChild(t); return td; };
+    function prepareTable(table, label) { const caption = document.createElement("caption"); caption.className = "sr-only"; caption.textContent = label; table.appendChild(caption); return table; }
+    function appendTable(parent, table) { const wrap = document.createElement("div"); wrap.className = "table-scroll"; wrap.tabIndex = 0; wrap.setAttribute("role", "region"); wrap.setAttribute("aria-label", "Scrollable " + (table.querySelector("caption")?.textContent || "data table")); wrap.appendChild(table); parent.appendChild(wrap); }
+    function compactRunLink(link, id) { const full = String(id || ""); link.textContent = full.length > 8 ? full.slice(0, 8) + "…" : full; link.title = full; link.setAttribute("aria-label", "run " + full); }
+
+    function appendCompactRun(parent, link, id) {
+      const full = String(id || "");
+      const wrap = document.createElement("span");
+      wrap.className = "run-id-wrap";
+      compactRunLink(link, full);
+      wrap.appendChild(link);
+      const copy = document.createElement("button");
+      copy.type = "button"; copy.className = "copy-run"; copy.textContent = "copy";
+      copy.setAttribute("aria-label", "Copy full run id " + full);
+      const status = document.createElement("span");
+      status.className = "sr-only"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+      copy.addEventListener("click", async () => {
+        try {
+          if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") throw new Error("clipboard unavailable");
+          await navigator.clipboard.writeText(full);
+          copy.textContent = "copied"; status.textContent = "Full run id copied";
+          setTimeout(() => { copy.textContent = "copy"; }, 1500);
+        } catch {
+          let fallback = wrap.querySelector(".copy-fallback");
+          if (!fallback) {
+            fallback = document.createElement("input"); fallback.type = "text";
+            fallback.className = "copy-fallback"; fallback.readOnly = true; fallback.value = full;
+            fallback.setAttribute("aria-label", "Full run id; copy manually");
+            wrap.appendChild(fallback);
+          }
+          fallback.focus(); fallback.select();
+          status.textContent = "Clipboard unavailable. Full run id selected for manual copy.";
+        }
+      });
+      wrap.appendChild(copy); wrap.appendChild(status); parent.appendChild(wrap);
+    }
+
+    const routeStatuses = new WeakMap();
+    function routeStatus(view) {
+      let status = routeStatuses.get(view);
+      if (!status) {
+        status = document.createElement("p"); status.className = "run-msg";
+        status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
+        routeStatuses.set(view, status); view.appendChild(status);
+      }
+      return status;
+    }
+    function resetView(view) {
+      const status = routeStatus(view);
+      for (const child of Array.from(view.children)) if (child !== status) child.remove();
+      status.textContent = ""; status.hidden = true;
+      return status;
+    }
+    function announce(status, message) {
+      status.textContent = ""; status.hidden = false;
+      requestAnimationFrame(() => { if (status.isConnected) status.textContent = message; });
+    }
+
+    // --- default entity-card dashboard (Phase 31) ---------------------------
+    const ENTITY_VIEW_KEY = "ops-entity-view-v1";
+    let entityData = null;
+    let entityShown = EntityView.PAGE_SIZE;
+    let entityPreferences = loadEntityPreferences();
+
+    function loadEntityPreferences() {
+      try { return EntityView.normalizePreferences(JSON.parse(localStorage.getItem(ENTITY_VIEW_KEY) || "{}")); }
+      catch { return EntityView.normalizePreferences(); }
+    }
+
+    function saveEntityPreferences() {
+      try { localStorage.setItem(ENTITY_VIEW_KEY, JSON.stringify(entityPreferences)); }
+      catch { /* storage unavailable -> preferences stay in memory */ }
+    }
+
+    function setEntityStatus(message) {
+      const status = document.getElementById("entities-status");
+      status.textContent = message;
+      status.hidden = false;
+    }
+
+    function setOptions(select, options, selected) {
+      select.replaceChildren();
+      for (const [value, label] of options) {
+        const option = document.createElement("option");
+        option.value = value; option.textContent = label; select.appendChild(option);
+      }
+      if (!options.some(([value]) => value === selected)) {
+        const option = document.createElement("option");
+        option.value = selected; option.textContent = selected + " (0)"; select.appendChild(option);
+      }
+      select.value = selected;
+    }
+
+    function updateEntityFacets() {
+      const rows = entityData && Array.isArray(entityData.entities) ? entityData.entities : [];
+      const severity = EntityView.severityFacets(rows, entityPreferences.activity);
+      setOptions(document.getElementById("entity-severity"), [
+        ["all", "All severities"],
+        ...severity.map((item) => [item.severity, `${item.severity} (${item.count})`]),
+      ], entityPreferences.severity);
+      const categories = EntityView.categoryFacets(rows, entityPreferences.activity);
+      setOptions(document.getElementById("entity-category"), [
+        ["all", "All categories"],
+        ...categories.map((item) => [item.category, `${item.category} (${item.count})`]),
+      ], entityPreferences.category);
+    }
+
+    function syncEntityControls() {
+      document.getElementById("entity-search").value = entityPreferences.search;
+      document.getElementById("entity-activity").value = entityPreferences.activity;
+      document.getElementById("entity-sort").value = entityPreferences.sort;
+      updateEntityFacets();
+    }
+
+    function renderEntitySummary(data) {
+      const parent = document.getElementById("entity-summary");
+      parent.replaceChildren();
+      const summary = EntityView.responseSummary(data, 0, 0);
+      for (const [label, value] of [
+        ["SME entities", summary.entityCount],
+        ["with active work", summary.entitiesWithActive],
+        ["active incidents", summary.activeIncidentCount],
+        ["total incidents", summary.incidentCount],
+        ["non-SME incidents", summary.nonSmeIncidentCount],
+      ]) parent.appendChild(tile(label, value));
+    }
+
+    function renderNonSme(data) {
+      const notice = document.getElementById("non-sme-notice");
+      notice.replaceChildren();
+      const summary = data && data.summary && data.summary.nonSme || {};
+      const groups = Array.isArray(data && data.nonSmeEntities) ? data.nonSmeEntities : [];
+      const strong = document.createElement("strong");
+      strong.textContent = "Non-SME producer groups: ";
+      notice.appendChild(strong);
+      const names = groups.map((group) => String(group.entity || "(blank)"));
+      notice.appendChild(document.createTextNode(
+        `${Number(summary.incidentCount) || 0} incidents across ${Number(summary.entityCount) || 0} groups` +
+        (names.length ? ` (${names.join(", ")})` : "") + ". ",
+      ));
+      const link = document.createElement("a");
+      link.href = "#incident-list"; link.textContent = "Inspect the complete incident list ›";
+      notice.appendChild(link);
+      notice.hidden = false;
+    }
+
+    function entityCategoryNode(item) {
+      const category = String(item && item.category || "unknown");
+      const provenance = EntityView.categoryProvenance(item);
+      const span = document.createElement("span");
+      span.className = "entity-category";
+      if (provenance === "oracle") {
+        span.className += " badge cat-oracle";
+        span.textContent = category + " · oracle hint";
+        span.title = ORACLE_TIP;
+      } else if (provenance === "mixed") {
+        span.className += " cat-mixed";
+        span.textContent = category + " · includes oracle";
+        span.title = "Includes classifier evidence and an oracle hint from recent equipment history.";
+      } else {
+        span.textContent = provenance === "unknown" ? category + " · source unknown" : category;
+      }
+      return span;
+    }
+
+    function addCardMeta(list, label, value) {
+      const dt = document.createElement("dt"); dt.textContent = label;
+      const dd = document.createElement("dd");
+      if (value instanceof Node) dd.appendChild(value); else dd.textContent = value;
+      list.appendChild(dt); list.appendChild(dd);
+    }
+
+    function entityCard(entity, index) {
+      const li = document.createElement("li");
+      const article = document.createElement("article");
+      const severity = entity.worstActiveSeverity || "none";
+      article.className = "entity-card edge-" + severity + (entity.activeIncidentCount > 0 ? "" : " resolved-only");
+      const heading = document.createElement("h3");
+      const link = document.createElement("a");
+      link.id = "entity-card-title-" + index;
+      link.href = "#entity=" + encodeURIComponent(entity.entity) + "&from=entities";
+      link.textContent = entity.entity;
+      heading.appendChild(link); article.setAttribute("aria-labelledby", link.id); article.appendChild(heading);
+
+      const priority = document.createElement("p");
+      priority.className = "card-priority";
+      if (entity.activeIncidentCount > 0) {
+        priority.appendChild(sevBadge(entity.worstActiveSeverity));
+        priority.appendChild(document.createTextNode(
+          ` · ${entity.activeIncidentCount} active incidents · ${entity.incidentCount} total incidents`,
+        ));
+      } else {
+        priority.textContent = `No active incidents · ${entity.incidentCount} total incidents`;
+      }
+      article.appendChild(priority);
+
+      const meta = document.createElement("dl");
+      addCardMeta(meta, "latest observed", timeNode(entity.lastSeen));
+      if (entity.activeIncidentCount > 0) addCardMeta(meta, "oldest active", timeNode(entity.oldestActiveFirstSeen));
+      addCardMeta(meta, "occurrences", EntityView.occurrenceText(entity.occurrenceCount));
+
+      const categories = document.createElement("span"); categories.className = "entity-tags";
+      const categoryItems = Array.isArray(entity.categories) ? entity.categories : [];
+      for (const item of categoryItems.slice(0, 3)) categories.appendChild(entityCategoryNode(item));
+      if (!categoryItems.length) categories.textContent = "—";
+      else if (categoryItems.length > 3) categories.appendChild(document.createTextNode("+" + (categoryItems.length - 3)));
+      addCardMeta(meta, "categories", categories);
+
+      const apps = EntityView.compact(entity.apps, 2);
+      const appText = apps.values.length ? apps.values.join(", ") + (apps.remaining ? ` +${apps.remaining}` : "") : "—";
+      addCardMeta(meta, `apps (${Number(entity.appCount) || 0})`, appText);
+      article.appendChild(meta); li.appendChild(article);
+      return li;
+    }
+
+    function renderEntities(focusIndex) {
+      if (!entityData) return;
+      const rows = Array.isArray(entityData.entities) ? entityData.entities : [];
+      const matching = EntityView.filterEntities(rows, entityPreferences);
+      const shown = Math.min(entityShown, matching.length);
+      const visible = EntityView.visible(matching, shown);
+      renderEntitySummary(entityData);
+      renderNonSme(entityData);
+
+      const cards = document.getElementById("entity-cards");
+      const fragment = document.createDocumentFragment();
+      visible.forEach((entity, index) => fragment.appendChild(entityCard(entity, index)));
+      cards.replaceChildren(fragment);
+
+      const more = document.getElementById("entity-more");
+      more.hidden = shown >= matching.length;
+      if (!more.hidden) {
+        const next = EntityView.nextCount(shown, matching.length);
+        more.textContent = `show ${next - shown} more entities`;
+      }
+
+      if (!rows.length) setEntityStatus("No SME entity incident summaries are currently present.");
+      else if (!matching.length) setEntityStatus("No SME entities match the active filters. Reset or clear a filter to continue.");
+      else setEntityStatus(`${shown} of ${matching.length} matching SME entities shown · ${rows.length} SME entities in the complete response.`);
+
+      if (Number.isInteger(focusIndex)) requestAnimationFrame(() => {
+        const nextButton = more.hidden ? null : more;
+        const newCard = cards.children[focusIndex] && cards.children[focusIndex].querySelector("a");
+        (nextButton || newCard || cards.querySelector("a"))?.focus();
+      });
+    }
+
+    function updateEntityPreferences(changes, updateFacets) {
+      entityPreferences = EntityView.normalizePreferences({ ...entityPreferences, ...changes });
+      entityShown = EntityView.PAGE_SIZE;
+      saveEntityPreferences();
+      if (updateFacets) updateEntityFacets();
+      renderEntities();
+    }
+
+    function initEntityControls() {
+      syncEntityControls();
+      document.getElementById("entity-search").addEventListener("input", (event) =>
+        updateEntityPreferences({ search: event.target.value }, false));
+      document.getElementById("entity-activity").addEventListener("change", (event) =>
+        updateEntityPreferences({ activity: event.target.value }, true));
+      document.getElementById("entity-severity").addEventListener("change", (event) =>
+        updateEntityPreferences({ severity: event.target.value }, false));
+      document.getElementById("entity-category").addEventListener("change", (event) =>
+        updateEntityPreferences({ category: event.target.value }, false));
+      document.getElementById("entity-sort").addEventListener("change", (event) =>
+        updateEntityPreferences({ sort: event.target.value }, false));
+      document.getElementById("entity-reset").addEventListener("click", () => {
+        entityPreferences = EntityView.normalizePreferences();
+        entityShown = EntityView.PAGE_SIZE;
+        saveEntityPreferences(); syncEntityControls(); renderEntities();
+      });
+      document.getElementById("entity-more").addEventListener("click", () => {
+        if (!entityData) return;
+        const matching = EntityView.filterEntities(entityData.entities, entityPreferences);
+        const previous = Math.min(entityShown, matching.length);
+        entityShown = EntityView.nextCount(previous, matching.length);
+        renderEntities(previous);
+      });
+    }
+
+    async function showEntities() {
+      const myReq = ++runReq;
+      hideAllViews();
+      const view = document.getElementById("entities-view");
+      view.hidden = false;
+      window.scrollTo(0, 0);
+      setEntityStatus(entityData ? "Refreshing complete entity summaries…" : "Loading complete entity summaries…");
+      let response;
+      try { response = await fetch("/api/entities"); }
+      catch {
+        if (myReq === runReq) setEntityStatus(entityData
+          ? "Couldn't refresh entity summaries. Showing the previous complete response."
+          : "Couldn't load entity summaries.");
+        return;
+      }
+      if (myReq !== runReq) return;
+      if (response.status === 503) {
+        setEntityStatus("Entity summaries are warming up. Use refresh to try again.");
+        return;
+      }
+      if (!response.ok) {
+        setEntityStatus(entityData
+          ? "Couldn't refresh entity summaries. Showing the previous complete response."
+          : "Couldn't load entity summaries.");
+        return;
+      }
+      let data;
+      try { data = await response.json(); }
+      catch { if (myReq === runReq) setEntityStatus("Couldn't read the entity summary response."); return; }
+      if (myReq !== runReq) return;
+      entityData = data;
+      updateEntityFacets();
+      renderEntities();
+    }
 
     // --- job grid: fetch once, render from memory on every control change -----
     // Rendering is decoupled from fetch: changing the group-by, a column sort, or
     // a group's collapsed state re-renders gridData with no network request. The
     // view state is persisted so a refresh keeps the operator's layout. (Phase 8)
 
-    const GRID_COLS = 8;
+    const GRID_COLS = 7;
     const GRID_VIEW_KEY = "ops-grid-view";
     const GROUP_OPTS = ["app", "job", "none"];
-    const SORT_KEYS = ["app", "job", "status", "lastRun", "age", "duration", "issues"];
+    const SORT_KEYS = GridView.SORT_KEYS;
     const STATUS_TOKENS = ["ERROR", "WARN", "SUCCESS", "STALE"]; // clickable status chips
     // The in-process grid cache only changes every GRID_REFRESH_MS (server default
     // 120s), so auto-refresh polls no faster than that -- anything quicker is wasted.
     const AUTO_REFRESH_MS = 120000;
     let gridData = null; // last /api/jobs/latest payload
-    let connRollupData = null; // last /api/connectivity rollup { hhm:{offline,total}, mmb:{…} } (Phase 14)
+    let connRollupData = null; // last /api/connectivity current-state rollup (Phase 20)
+    let gridRetryTimer = null; // at most one cache-warm retry chain
     // data_acquisition inline run expansion (Phase 16): lazy, capped peek at recent run_ids.
     const DA_RUNS_WINDOW_HOURS = 12;
     const DA_RUNS_CAP = 50;
@@ -188,7 +559,7 @@
         const s = JSON.parse(localStorage.getItem(GRID_VIEW_KEY) || "{}");
         return {
           groupBy: GROUP_OPTS.includes(s.groupBy) ? s.groupBy : def.groupBy,
-          sortKey: SORT_KEYS.includes(s.sortKey) ? s.sortKey : def.sortKey,
+          sortKey: GridView.normalizeSortKey(s.sortKey),
           sortDir: s.sortDir === "asc" || s.sortDir === "desc" ? s.sortDir : def.sortDir,
           search: typeof s.search === "string" ? s.search : "",
           statuses: new Set((Array.isArray(s.statuses) ? s.statuses : []).filter((t) => STATUS_TOKENS.includes(t))),
@@ -216,10 +587,18 @@
       const res = await fetch("/api/jobs/latest");
       const r = await res.json();
       if (res.status === 503) {
-        document.getElementById("meta").textContent = "· warming up, retrying…";
-        setTimeout(loadGrid, 3000);
+        if (activeRoute.id === "jobs") document.getElementById("meta").textContent = "· warming up, retrying…";
+        if (gridRetryTimer == null) {
+          gridRetryTimer = setTimeout(() => {
+            gridRetryTimer = null;
+            loadGrid().catch((err) => {
+              if (activeRoute.id === "jobs") document.getElementById("meta").textContent = "· error: " + err.message;
+            });
+          }, 3000);
+        }
         return;
       }
+      if (gridRetryTimer != null) { clearTimeout(gridRetryTimer); gridRetryTimer = null; }
       gridData = r;
       renderGrid(); // builds the summary header + chips from gridData
     }
@@ -230,6 +609,7 @@
       const badge = document.createElement("span");
       badge.className = "badge " + j.status;
       badge.textContent = j.status;
+      badge.title = "latest run status";
       st.appendChild(badge);
       if (j.stale) { const s = document.createElement("span"); s.className = "badge stale"; s.textContent = "STALE"; s.style.marginLeft = ".3rem"; st.appendChild(s); }
       // stale === null: no configured cadence. Mark it so an unknown job is never
@@ -245,8 +625,7 @@
       tr.appendChild(cell(j.app));
       tr.appendChild(cell(j.job));
       tr.appendChild(jobStatusCell(j));
-      tr.appendChild(cell(fmtTime(j.lastRun)));
-      tr.appendChild(cell(fmtAge(j.ageMs), "num"));
+      tr.appendChild(timeCell(j.lastRun));
       tr.appendChild(cell(fmtDur(j.durationMs), "num"));
       tr.appendChild(cell(j.issueCount, "num"));
       const idCell = document.createElement("td");
@@ -254,19 +633,20 @@
         // data_acquisition is a bucket of many runs, not one. Its run-id cell is the
         // toggle for the inline list of distinct runs (Phase 16) -- the dropdown is the
         // authoritative per-run list, so the summary row claims no single run_id.
-        const t = document.createElement("a");
-        t.href = "#";
+        const t = document.createElement("button");
+        t.type = "button";
+        t.id = "da-runs-toggle";
         t.className = "muted";
         t.textContent = (daRuns.expanded ? "▾" : "▸") + " " + DA_RUNS_WINDOW_HOURS + "h runs";
-        t.addEventListener("click", (ev) => { ev.preventDefault(); toggleDaRuns(); });
+        t.setAttribute("aria-expanded", String(daRuns.expanded));
+        t.addEventListener("click", toggleDaRuns);
         idCell.appendChild(t);
       } else {
         const link = document.createElement("a");
         // Open the drill-down view, passing inserted_at as the hint (`at`) so the
         // run query prunes to one partition.
-        link.href = runHref(j.runId, j.lastRun);
-        link.textContent = j.runId;
-        idCell.appendChild(link);
+        link.href = runHref(j.runId, j.lastRun, "jobs");
+        appendCompactRun(idCell, link, j.runId);
       }
       tr.appendChild(idCell);
       return tr;
@@ -278,16 +658,18 @@
       const collapsed = gridView.collapsed.has(group.key);
       const tr = document.createElement("tr");
       tr.className = "group-head";
-      tr.tabIndex = 0;
-      tr.setAttribute("role", "button");
-      tr.setAttribute("aria-expanded", String(!collapsed));
       const td = document.createElement("td");
       td.colSpan = GRID_COLS;
+      const toggleButton = document.createElement("button");
+      toggleButton.type = "button"; toggleButton.className = "group-toggle";
+      toggleButton.setAttribute("aria-expanded", String(!collapsed));
+      toggleButton.setAttribute("aria-label", (collapsed ? "Expand " : "Collapse ") + group.key + " group");
       const disc = document.createElement("span");
       disc.className = "disclosure";
       disc.textContent = collapsed ? "▸" : "▾";
-      td.appendChild(disc);
-      td.appendChild(document.createTextNode(group.key));
+      toggleButton.appendChild(disc);
+      toggleButton.appendChild(document.createTextNode(group.key));
+      td.appendChild(toggleButton);
       const cnt = document.createElement("span");
       cnt.className = "grp-count";
       cnt.textContent = "(" + group.rows.length + ")";
@@ -296,6 +678,7 @@
       const b = document.createElement("span");
       b.className = "badge " + status;
       b.textContent = status;
+      b.title = "worst latest-run status in this group";
       td.appendChild(b);
       // When grouped by app, the group key IS an app name: show its recent-run health
       // (Phase 12) so a high-frequency single-bucket app isn't judged by one latest run.
@@ -306,24 +689,27 @@
           const hb = document.createElement("span");
           hb.className = "badge " + (h.errored > 0 ? "ERROR" : "SUCCESS");
           hb.style.marginLeft = ".5rem";
-          hb.title = "runs in the last " + gridData.appHealthWindowHours + "h that errored / total (recent health, not the single latest run)";
+          hb.title = "historical run health: runs in the last " + gridData.appHealthWindowHours + "h that errored / total; separate from latest status";
           hb.textContent = txt;
           td.appendChild(hb);
         }
       }
-      // Connectivity rollup (Phase 14): offline equipment counts for data_acquisition
-      // (it owns the HHM/MMB sources), linking to the connectivity panel.
+      // Connectivity rollup: CURRENT offline counts plus historical/stale snapshot
+      // count. Phase 20 stopped treating an old successful row as current ONLINE.
       if (gridView.groupBy === "app" && group.key === "data_acquisition" && connRollupData) {
-        const h = connRollupData.hhm || { offline: 0 };
-        const m = connRollupData.mmb || { offline: 0 };
+        const h = connRollupData.hhm || { offline: 0, unknown: 0, stale: 0 };
+        const m = connRollupData.mmb || { offline: 0, unknown: 0, stale: 0 };
         const off = (h.offline || 0) + (m.offline || 0);
+        const unknown = (h.unknown || 0) + (m.unknown || 0);
+        const staleRows = (h.stale || 0) + (m.stale || 0);
         const cb = document.createElement("a");
         cb.href = "#connectivity";
-        cb.className = "badge " + (off > 0 ? "ERROR" : "SUCCESS");
+        cb.className = "badge " + (off > 0 ? "ERROR" : unknown > 0 ? "WARN" : staleRows > 0 ? "stale" : "SUCCESS");
         cb.style.marginLeft = ".5rem";
         cb.style.textDecoration = "none";
-        cb.title = "equipment connectivity — offline systems; click for the connectivity panel";
-        cb.textContent = "conn: HHM " + (h.offline || 0) + " / MMB " + (m.offline || 0) + " off";
+        cb.title = "current equipment connectivity from records checked within 45 minutes; stale = older historical snapshot rows";
+        cb.textContent = "conn now: HHM " + (h.offline || 0) + " / MMB " + (m.offline || 0) + " off" +
+          (unknown ? " · " + unknown + " unknown" : "") + (staleRows ? " · " + staleRows + " stale" : "");
         cb.addEventListener("click", (ev) => ev.stopPropagation()); // navigate, don't toggle collapse
         td.appendChild(cb);
       }
@@ -357,8 +743,7 @@
         saveGridView();
         renderGrid();
       };
-      tr.addEventListener("click", toggle);
-      tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+      toggleButton.addEventListener("click", toggle);
       return tr;
     }
 
@@ -396,11 +781,15 @@
     function toggleDaRuns() {
       daRuns.expanded = !daRuns.expanded;
       if (daRuns.expanded) loadDaRuns(); // refetch fresh on each expand
-      else renderGrid();
+      else { renderGrid(); focusDaToggle(); }
+    }
+
+    function focusDaToggle() {
+      requestAnimationFrame(() => document.getElementById("da-runs-toggle")?.focus());
     }
 
     async function loadDaRuns() {
-      daRuns.loading = true; daRuns.error = null; renderGrid();
+      daRuns.loading = true; daRuns.error = null; renderGrid(); focusDaToggle();
       try {
         const res = await fetch("/api/apps/data_acquisition/runs?windowHours=" + DA_RUNS_WINDOW_HOURS + "&limit=" + DA_RUNS_CAP);
         if (!res.ok) throw new Error("HTTP " + res.status);
@@ -411,7 +800,7 @@
         daRuns.error = "couldn't load runs"; daRuns.runs = []; daRuns.more = false;
       }
       daRuns.loading = false;
-      renderGrid();
+      renderGrid(); focusDaToggle();
     }
 
     function daNote(text) {
@@ -457,13 +846,12 @@
       const st = cell("");
       const b = document.createElement("span"); b.className = "badge " + r.status; b.textContent = r.status;
       st.appendChild(b); tr.appendChild(st);
-      tr.appendChild(cell(fmtTime(r.insertedAt)));
-      tr.appendChild(cell(fmtAge(Date.now() - Date.parse(r.insertedAt)), "num"));
+      tr.appendChild(timeCell(r.insertedAt));
       tr.appendChild(cell("—", "num")); // run-log is lean: no duration
       tr.appendChild(cell(r.issueCount, "num"));
       const idc = document.createElement("td");
-      const a = document.createElement("a"); a.href = runHref(r.runId, r.insertedAt); a.textContent = r.runId;
-      idc.appendChild(a); tr.appendChild(idc);
+      const a = document.createElement("a"); a.href = runHref(r.runId, r.insertedAt, "jobs");
+      appendCompactRun(idc, a, r.runId); tr.appendChild(idc);
       return tr;
     }
 
@@ -476,8 +864,10 @@
       const unknownCadence = s.unknown ? ` · ${s.unknown} cadence unknown` : "";
       const filtering = !!gridView.search || gridView.statuses.size > 0;
       const showing = filtering ? ` · showing ${visibleCount}` : "";
-      document.getElementById("meta").textContent =
-        `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOfTime}` + unknownCadence + showing + (r.stale ? ` · ⚠ ${r.stale}` : "");
+      if (activeRoute.id === "jobs") {
+        document.getElementById("meta").textContent =
+          `· ${r.count} jobs · last ${r.lookbackDays}d · as of ${asOfTime}` + unknownCadence + showing + (r.stale ? ` · ⚠ ${r.stale}` : "");
+      }
       renderChips(s);
       updateUpdatedLabel();
     }
@@ -496,6 +886,8 @@
         btn.className = "chip badge " + CHIP_CLASS[token] + (active ? " active" : "");
         btn.textContent = token + " " + count;
         btn.setAttribute("aria-pressed", String(active));
+        btn.disabled = GridView.chipDisabled(count, active);
+        if (count === 0) btn.title = "No jobs currently match this status";
         btn.addEventListener("click", () => {
           if (gridView.statuses.has(token)) gridView.statuses.delete(token);
           else gridView.statuses.add(token);
@@ -518,7 +910,7 @@
       document.querySelectorAll("#grid thead th[data-sort-key]").forEach((th) => {
         let ind = th.querySelector(".sort-ind");
         if (th.dataset.sortKey === gridView.sortKey) {
-          if (!ind) { ind = document.createElement("span"); ind.className = "sort-ind"; th.appendChild(ind); }
+          if (!ind) { ind = document.createElement("span"); ind.className = "sort-ind"; (th.querySelector("button") || th).appendChild(ind); }
           ind.textContent = gridView.sortDir === "asc" ? "▲" : "▼";
           th.setAttribute("aria-sort", gridView.sortDir === "asc" ? "ascending" : "descending");
         } else {
@@ -566,46 +958,103 @@
       setAutoRefresh(auto.checked);
 
       document.querySelectorAll("#grid thead th[data-sort-key]").forEach((th) => {
-        th.tabIndex = 0;
-        th.setAttribute("role", "button");
+        th.scope = "col";
         const key = th.dataset.sortKey;
+        const label = th.textContent;
+        th.replaceChildren();
+        const button = document.createElement("button"); button.type = "button";
+        button.textContent = label; button.setAttribute("aria-label", "Sort by " + label);
+        th.appendChild(button);
         const apply = () => {
           if (gridView.sortKey === key) gridView.sortDir = gridView.sortDir === "asc" ? "desc" : "asc";
           else { gridView.sortKey = key; gridView.sortDir = defaultDir(key); }
           saveGridView();
           renderGrid();
         };
-        th.addEventListener("click", apply);
-        th.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); apply(); } });
+        button.addEventListener("click", apply);
       });
+      document.querySelectorAll("table th").forEach((th) => { if (!th.scope) th.scope = "col"; });
     }
 
-    async function loadErrors() {
-      const r = await fetch("/api/errors?limit=100").then((x) => x.json());
+    const errorFeed = { events: [], lookbackDays: null, shown: 0, failed: false, expanded: new Set() };
+
+    function errorMessage(e) {
+      return e && e.err_msg ? e.err_msg : e && e.note ? noteText(e.note) : "—";
+    }
+
+    function renderErrorFeed(focusMore = false) {
       const tb = document.querySelector("#errors tbody");
-      tb.innerHTML = "";
-      for (const e of r.events) {
+      const summary = document.getElementById("error-feed-summary");
+      tb.replaceChildren();
+      if (errorFeed.failed) {
+        summary.textContent = "(load failed)";
         const tr = document.createElement("tr");
-        // Link to the run drill-down, using the event dt as the hint. The hinted
-        // run query matches inserted_at within ±1h, and a run's events are within
-        // minutes of its inserted_at, so dt prunes to the right partition.
-        if (e.run_id) {
-          tr.className = "clickable";
-          tr.tabIndex = 0;
-          tr.setAttribute("role", "link");
-          const go = () => { location.hash = runHash(e.run_id, e.dt); };
-          tr.addEventListener("click", go);
-          tr.addEventListener("keydown", (ev) => {
-            if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); }
-          });
-        }
-        tr.appendChild(cell(fmtTime(e.dt)));
+        const td = cell("Couldn't load the recent WARN/ERROR feed.", "muted");
+        td.colSpan = 6; tr.appendChild(td); tb.appendChild(tr);
+        return;
+      }
+      const events = errorFeed.events;
+      if (!events.length) {
+        summary.textContent = `(no WARN/ERROR in the last ${errorFeed.lookbackDays || "?"}d)`;
+        const tr = document.createElement("tr");
+        const td = cell(`No WARN/ERROR events occurred in the last ${errorFeed.lookbackDays || "?"} days.`, "muted");
+        td.colSpan = 6; tr.appendChild(td); tb.appendChild(tr);
+        return;
+      }
+      const shown = Math.min(errorFeed.shown, events.length);
+      summary.textContent = `(recent WARN/ERROR · ${FeedView.countText(shown, events.length)})`;
+      for (let index = 0; index < shown; index++) {
+        const e = events[index];
+        const tr = document.createElement("tr");
+        tr.appendChild(timeCell(e.dt));
         tr.appendChild(cell(e.app_name));
         const ty = cell(""); const b = document.createElement("span"); b.className = "badge " + e.type; b.textContent = e.type; ty.appendChild(b); tr.appendChild(ty);
         tr.appendChild(cell(e.func || "—"));
-        tr.appendChild(cell(e.err_msg || (e.note ? JSON.stringify(e.note) : "—"), "err-msg"));
+        const msg = document.createElement("td");
+        msg.appendChild(expandableText(errorMessage(e), "err-msg", errorFeed.expanded, "error-" + index));
+        tr.appendChild(msg);
+        const run = document.createElement("td");
+        if (e.run_id) {
+          // Explicit native link: expanding a message never navigates; normal link
+          // open/copy behaviors work. Event dt remains the partition-pruning hint.
+          const a = document.createElement("a");
+          a.href = runHref(e.run_id, e.dt, "jobs"); a.textContent = "view ›";
+          run.appendChild(a);
+        } else run.textContent = "—";
+        tr.appendChild(run);
         tb.appendChild(tr);
       }
+      if (shown < events.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td"); td.colSpan = 6;
+        const more = document.createElement("button"); more.type = "button";
+        const next = FeedView.nextCount(shown, events.length);
+        more.textContent = `show ${next - shown} more`;
+        more.dataset.feedMore = "true";
+        more.addEventListener("click", () => { errorFeed.shown = next; renderErrorFeed(true); });
+        td.appendChild(more); tr.appendChild(td); tb.appendChild(tr);
+      }
+      if (focusMore) {
+        const target = tb.querySelector("[data-feed-more]") || summary;
+        if (target === summary) summary.tabIndex = -1;
+        target.focus();
+      }
+    }
+
+    async function loadErrors() {
+      errorFeed.failed = false;
+      try {
+        const res = await fetch("/api/errors?limit=100");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const r = await res.json();
+        errorFeed.events = Array.isArray(r.events) ? r.events : [];
+        errorFeed.lookbackDays = r.lookbackDays;
+        errorFeed.shown = FeedView.initialCount(errorFeed.events.length);
+        errorFeed.expanded.clear();
+      } catch {
+        errorFeed.events = []; errorFeed.lookbackDays = null; errorFeed.shown = 0; errorFeed.failed = true;
+      }
+      renderErrorFeed();
     }
 
     // --- drill-down: hash route + run timeline -------------------------------
@@ -613,12 +1062,25 @@
     // Hash links carry the run id and a partition-pruning hint (`at`): the grid
     // passes the row's inserted_at, the error feed passes the event dt. Both are
     // sent to the API as ?inserted_at=<at>.
-    const runHash = (id, hint) => "run=" + encodeURIComponent(id) + (hint ? "&at=" + encodeURIComponent(hint) : "");
-    const runHref = (id, hint) => "#" + runHash(id, hint);
+    let activeRoute = Routes.parse(location.hash);
+    let currentRefresh = refresh;
+
+    function fromToken() {
+      const r = activeRoute;
+      if (r.id === "appruns") return "appruns:" + r.params.app;
+      if (r.id === "entity") return "entity:" + r.params.entity;
+      if (r.id === "system") return "system:" + r.params.system;
+      if (r.id === "incident") return "incident:" + r.params.incident;
+      if (r.id === "acq") return "acq-systems";
+      return r.id;
+    }
+
+    const runHash = (id, hint, context) => "run=" + encodeURIComponent(id) + (hint ? "&at=" + encodeURIComponent(hint) : "") + "&from=" + encodeURIComponent(context || fromToken());
+    const runHref = (id, hint, context) => "#" + runHash(id, hint, context);
 
     // Per-system detail link (Phase 17). systemCell renders an id that navigates to the
     // cross-app view for that equipment; the connectivity and acquisition tables reuse it.
-    const systemHref = (id) => "#system=" + encodeURIComponent(id);
+    const systemHref = (id) => "#system=" + encodeURIComponent(id) + "&from=" + encodeURIComponent(fromToken());
     function systemCell(id) {
       const td = document.createElement("td");
       if (id) { const a = document.createElement("a"); a.href = systemHref(id); a.textContent = id; td.appendChild(a); }
@@ -644,12 +1106,12 @@
 
     async function refresh() {
       try { await Promise.all([loadGrid(), loadErrors(), loadConnRollup()]); dashboardLoaded = true; }
-      catch (err) { document.getElementById("meta").textContent = "· error: " + err.message; }
+      catch (err) { if (activeRoute.id === "jobs") document.getElementById("meta").textContent = "· error: " + err.message; }
     }
 
     function backLink() {
       const a = document.createElement("a");
-      a.href = "#"; a.textContent = "← back"; a.className = "muted";
+      a.href = activeRoute.returnHref; a.textContent = "← " + activeRoute.returnLabel; a.className = "muted";
       return a;
     }
 
@@ -666,12 +1128,99 @@
     // Compact, text-only rendering of an event's `note` object: surface the ids
     // operators look for, then the full note as JSON. Never interpreted as HTML.
     function noteText(note) {
-      if (note == null) return "";
-      if (typeof note !== "object") return String(note);
-      const id = note.system_id || note.sme;
-      const head = [id && ("system: " + id), note.job_id && ("job: " + note.job_id)].filter(Boolean).join("  ");
-      const json = JSON.stringify(note);
-      return head ? head + "\n" + json : json;
+      return FeedView.noteText(note);
+    }
+
+    let disclosureId = 0;
+
+    // Text-only progressive disclosure for untrusted log/incident strings. The
+    // preview is first-line + length bounded; the full source is never innerHTML.
+    function expandableText(value, className, expandedState, stateKey) {
+      const full = value == null || String(value).trim() === "" ? "—" : String(value);
+      const preview = FeedView.messagePreview(full);
+      const wrap = document.createElement("div");
+      const body = document.createElement("div");
+      body.className = className || "";
+      body.textContent = preview;
+      wrap.appendChild(body);
+      if (FeedView.hasMoreText(full)) {
+        body.id = "disclosure-" + (++disclosureId);
+        const toggle = document.createElement("button");
+        toggle.type = "button"; toggle.className = "muted";
+        const initiallyExpanded = !!(expandedState && expandedState.has(stateKey));
+        toggle.textContent = initiallyExpanded ? "show less" : "show full";
+        toggle.setAttribute("aria-expanded", String(initiallyExpanded));
+        toggle.setAttribute("aria-controls", body.id);
+        if (initiallyExpanded) body.textContent = full;
+        toggle.addEventListener("click", () => {
+          const expanded = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", String(!expanded));
+          toggle.textContent = expanded ? "show full" : "show less";
+          body.textContent = expanded ? preview : full;
+          if (expandedState) {
+            if (expanded) expandedState.delete(stateKey); else expandedState.add(stateKey);
+          }
+        });
+        wrap.appendChild(toggle);
+      }
+      return wrap;
+    }
+
+    function searchControl(id, labelText, value, onInput, placeholder) {
+      const label = document.createElement("label");
+      label.appendChild(document.createTextNode(labelText + " "));
+      const input = document.createElement("input");
+      input.type = "search"; input.id = id; input.value = value || "";
+      input.placeholder = placeholder || "";
+      input.addEventListener("input", () => onInput(input.value));
+      label.appendChild(input);
+      return label;
+    }
+
+    function selectControl(labelText, value, options, onChange) {
+      const label = document.createElement("label");
+      label.appendChild(document.createTextNode(labelText + " "));
+      const select = document.createElement("select");
+      for (const [optionValue, text] of options) {
+        const option = document.createElement("option");
+        option.value = optionValue; option.textContent = text; select.appendChild(option);
+      }
+      select.value = value;
+      select.addEventListener("change", () => onChange(select.value));
+      label.appendChild(select);
+      return label;
+    }
+
+    function checkboxControl(labelText, checked, onChange) {
+      const label = document.createElement("label");
+      const input = document.createElement("input"); input.type = "checkbox"; input.checked = !!checked;
+      input.addEventListener("change", () => onChange(input.checked));
+      label.appendChild(input); label.appendChild(document.createTextNode(" " + labelText));
+      return label;
+    }
+
+    function listCount(shown, matching, loaded, scope = "loaded") {
+      return matching === loaded
+        ? `showing ${shown} of ${loaded} ${scope}`
+        : `showing ${shown} of ${matching} matching · ${loaded} ${scope}`;
+    }
+
+    function appendListMore(parent, shown, matching, onMore) {
+      if (shown >= matching) return;
+      const button = document.createElement("button"); button.type = "button";
+      const next = ListView.nextCount(shown, matching);
+      button.textContent = `show ${next - shown} more`;
+      button.style.marginTop = ".8rem";
+      button.dataset.listMore = "true";
+      button.addEventListener("click", () => {
+        onMore();
+        requestAnimationFrame(() => {
+          const nextButton = parent.querySelector("[data-list-more]");
+          const target = nextButton || parent.querySelector(".table-scroll");
+          if (target) target.focus();
+        });
+      });
+      parent.appendChild(button);
     }
 
     const TYPE_CLASS = { INFO: "INFO", WARN: "WARN", ERROR: "ERROR" };
@@ -680,7 +1229,7 @@
       const tr = document.createElement("tr");
       const type = e && e.type;
       if (type === "WARN" || type === "ERROR") tr.className = "row-" + type;
-      tr.appendChild(cell(fmtTime(e && e.dt)));
+      tr.appendChild(timeCell(e && e.dt));
       const ty = cell("");
       if (type) {
         const b = document.createElement("span");
@@ -697,16 +1246,13 @@
     }
 
     function renderRunMessage(view, msg) {
-      view.replaceChildren();
-      view.appendChild(backLink());
-      const p = document.createElement("p");
-      p.className = "run-msg";
-      p.textContent = msg;
-      view.appendChild(p);
+      const status = resetView(view);
+      view.insertBefore(backLink(), status);
+      announce(status, msg);
     }
 
     function renderRun(view, data) {
-      view.replaceChildren();
+      resetView(view);
       const events = Array.isArray(data.events) ? data.events : [];
 
       view.appendChild(backLink());
@@ -745,16 +1291,16 @@
         return;
       }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Events recorded for this run");
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["When", "Type", "Func", "Tag", "Detail", "Message"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
 
       // Render in one fragment pass; cap the initial render so a huge run stays
       // responsive, with a button to reveal the rest on demand.
@@ -772,7 +1318,10 @@
         label.textContent = "Showing " + RENDER_CAP + " of " + events.length + " events. ";
         const btn = document.createElement("button");
         btn.textContent = "show all " + events.length;
-        btn.addEventListener("click", () => { appendRows(RENDER_CAP, events.length); note.remove(); });
+        btn.addEventListener("click", () => {
+          appendRows(RENDER_CAP, events.length); note.remove();
+          table.closest(".table-scroll")?.focus();
+        });
         note.appendChild(label); note.appendChild(btn);
         view.appendChild(note);
       }
@@ -786,7 +1335,7 @@
     // Every routed view lives in its own <section>; hide them all before showing one, so
     // a newly added view can never strand a stale sibling (9 views as of Phase 19).
     function hideAllViews() {
-      for (const id of ["dashboard", "run-view", "connectivity-view", "appruns-view", "acq-view", "systems-view", "system-view", "incidents-view", "incident-view"]) {
+      for (const id of ["entities-view", "dashboard", "run-view", "connectivity-view", "appruns-view", "acq-view", "systems-view", "system-view", "incidents-view", "incident-view"]) {
         const el = document.getElementById(id);
         if (el) el.hidden = true;
       }
@@ -843,9 +1392,10 @@
 
     function renderAppRuns() {
       const view = document.getElementById("appruns-view");
-      view.replaceChildren();
+      resetView(view);
       view.appendChild(backLink());
       const st = appRunsState;
+      const matchingRuns = ListView.filterAppRuns(st.runs, st.search);
 
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
@@ -855,8 +1405,8 @@
 
       const sub = document.createElement("div");
       sub.className = "muted";
-      const more = st.nextBefore ? " (more available)" : "";
-      sub.textContent = `· ${st.runs.length} runs loaded${more}`;
+      const more = st.nextBefore ? " · more pages available" : "";
+      sub.textContent = `· ${matchingRuns.length} matching · ${st.runs.length} runs loaded${more}`;
       view.appendChild(sub);
 
       // Status filter (Phase 13): changing it refetches from page 1 for this app.
@@ -868,25 +1418,35 @@
         btn.textContent = label;
         const active = st.status === val;
         btn.setAttribute("aria-pressed", String(active));
-        if (active) { btn.disabled = true; btn.style.fontWeight = "700"; }
-        btn.addEventListener("click", () => showAppRuns(st.app, val));
+        if (active) btn.style.fontWeight = "700";
+        btn.addEventListener("click", () => showAppRuns(st.app, active && val !== "all" ? "all" : val));
         ctrl.appendChild(btn);
       }
+      ctrl.appendChild(searchControl("appruns-search", "Search loaded runs", st.search, (value) => {
+        st.search = value; renderAppRuns();
+        const input = document.getElementById("appruns-search");
+        if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+      }, "run id / job type"));
+      const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "clear search";
+      clear.disabled = !st.search;
+      clear.addEventListener("click", () => { st.search = ""; renderAppRuns(); });
+      ctrl.appendChild(clear);
       view.appendChild(ctrl);
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Loaded runs for " + st.app);
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
-      for (const h of ["When", "Status", "Issues", "Run id"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+      for (const h of ["When", "Job type", "Status", "Issues", "Run id"]) {
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
       const frag = document.createDocumentFragment();
-      for (const r of st.runs) {
+      for (const r of matchingRuns) {
         const tr = document.createElement("tr");
         if (r.status === "ERROR" || r.status === "WARN") tr.className = "row-" + r.status;
-        tr.appendChild(cell(fmtTime(r.insertedAt)));
+        tr.appendChild(timeCell(r.insertedAt));
+        tr.appendChild(cell(r.jobType || "—"));
         const stc = cell("");
         const b = document.createElement("span");
         b.className = "badge " + (CONN_STATUS_CLASS[r.status] || "INFO");
@@ -897,19 +1457,18 @@
         const idCell = document.createElement("td");
         const link = document.createElement("a");
         link.href = runHref(r.runId, r.insertedAt); // drill-down with the inserted_at hint
-        link.textContent = r.runId;
-        idCell.appendChild(link);
+        appendCompactRun(idCell, link, r.runId);
         tr.appendChild(idCell);
         frag.appendChild(tr);
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
 
-      if (!st.runs.length) {
+      if (!matchingRuns.length) {
         const p = document.createElement("p");
         p.className = "muted";
-        p.textContent = "No runs in the window.";
+        p.textContent = st.search ? "No currently loaded runs match the search." : "No runs in the window.";
         view.appendChild(p);
       }
 
@@ -917,9 +1476,14 @@
         const btn = document.createElement("button");
         btn.textContent = st.loading ? "loading…" : "load more";
         btn.disabled = st.loading;
+        btn.dataset.appRunsMore = "true";
         btn.style.marginTop = ".8rem";
         btn.addEventListener("click", loadMoreAppRuns);
         view.appendChild(btn);
+      }
+      if (st.focusAfterLoad && !st.loading) {
+        st.focusAfterLoad = false;
+        requestAnimationFrame(() => (view.querySelector("[data-app-runs-more]") || view.querySelector(".table-scroll"))?.focus());
       }
     }
 
@@ -936,7 +1500,7 @@
       const view = document.getElementById("appruns-view");
       view.hidden = false;
       window.scrollTo(0, 0);
-      appRunsState = { app, status, req: myReq, runs: [], nextBefore: null, nextBeforeId: null, loading: true };
+      appRunsState = { app, status, search: "", req: myReq, runs: [], nextBefore: null, nextBeforeId: null, loading: true };
       connMessage(view, "Loading run log…");
       let data;
       try { data = await fetchAppRunsPage(null, null); }
@@ -953,7 +1517,7 @@
       const st = appRunsState;
       if (!st || st.loading || !st.nextBefore) return;
       const myReq = st.req;
-      st.loading = true;
+      st.loading = true; st.focusAfterLoad = true;
       renderAppRuns(); // reflect the "loading…" button state
       let data;
       try { data = await fetchAppRunsPage(st.nextBefore, st.nextBeforeId); }
@@ -970,10 +1534,14 @@
     // data_acquisition's recent acquisitions broken down by system, with a per-source
     // (hhm/mmb) rollup. From stats.acquisition_history; worst-first.
 
+    const acqListState = { search: "", source: "all", failuresOnly: false, shown: ListView.PAGE_SIZE };
+
     function renderAcqSystems(view, data) {
-      view.replaceChildren();
+      resetView(view);
       view.appendChild(backLink());
       const systems = Array.isArray(data.systems) ? data.systems : [];
+      const matching = ListView.filterAcquisition(systems, acqListState);
+      const visible = ListView.visible(matching, acqListState.shown);
 
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
@@ -991,6 +1559,25 @@
         `hhm ${hhm.failed}/${hhm.runs} failed (${hhm.systems} sys) · mmb ${mmb.failed}/${mmb.runs} failed (${mmb.systems} sys)`;
       view.appendChild(sub);
 
+      const controls = document.createElement("div"); controls.className = "controls";
+      controls.appendChild(searchControl("acq-search", "Search", acqListState.search, (value) => {
+        acqListState.search = value; acqListState.shown = ListView.PAGE_SIZE; renderAcqSystems(view, data);
+        const input = document.getElementById("acq-search"); if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+      }, "system / modality / manufacturer"));
+      controls.appendChild(selectControl("Source", acqListState.source, [["all", "All"], ["hhm", "HHM"], ["mmb", "MMB"]], (value) => {
+        acqListState.source = value; acqListState.shown = ListView.PAGE_SIZE; renderAcqSystems(view, data);
+      }));
+      controls.appendChild(checkboxControl("failures only", acqListState.failuresOnly, (value) => {
+        acqListState.failuresOnly = value; acqListState.shown = ListView.PAGE_SIZE; renderAcqSystems(view, data);
+      }));
+      const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "clear filters";
+      clear.disabled = !acqListState.search && acqListState.source === "all" && !acqListState.failuresOnly;
+      clear.addEventListener("click", () => { Object.assign(acqListState, { search: "", source: "all", failuresOnly: false, shown: ListView.PAGE_SIZE }); renderAcqSystems(view, data); });
+      controls.appendChild(clear);
+      const count = document.createElement("span"); count.className = "muted";
+      count.textContent = listCount(visible.length, matching.length, systems.length, "response rows");
+      controls.appendChild(count); view.appendChild(controls);
+
       if (!systems.length) {
         const p = document.createElement("p");
         p.className = "muted";
@@ -998,17 +1585,21 @@
         view.appendChild(p);
         return;
       }
+      if (!matching.length) {
+        const p = document.createElement("p"); p.className = "muted"; p.textContent = "No acquisition systems match the active filters.";
+        view.appendChild(p); return;
+      }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Acquisition outcomes by system");
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["System", "Source", "Modality", "Manufacturer", "Runs", "Failed", "Last seen"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
       const frag = document.createDocumentFragment();
-      for (const s of systems) {
+      for (const s of visible) {
         const tr = document.createElement("tr");
         if (s.failed > 0) tr.className = "row-ERROR";
         tr.appendChild(systemCell(s.systemId));
@@ -1017,12 +1608,16 @@
         tr.appendChild(cell(s.manufacturer || "—"));
         tr.appendChild(cell(s.runs, "num"));
         tr.appendChild(cell(s.failed, "num"));
-        tr.appendChild(cell(fmtTime(s.lastSeen)));
+        tr.appendChild(timeCell(s.lastSeen));
         frag.appendChild(tr);
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
+      appendListMore(view, visible.length, matching.length, () => {
+        acqListState.shown = ListView.nextCount(acqListState.shown, matching.length);
+        renderAcqSystems(view, data);
+      });
     }
 
     async function showAcqSystems() {
@@ -1046,21 +1641,30 @@
 
     // --- connectivity view (Phase 10) ----------------------------------------
 
-    const CONN_BADGE = { OFFLINE: "ERROR", ONLINE: "SUCCESS", UNKNOWN: "unknown" };
+    const CONN_BADGE = { OFFLINE: "ERROR", ONLINE: "SUCCESS", UNKNOWN: "unknown", STALE: "stale" };
+    const connListState = { search: "", source: "all", state: "all", shown: ListView.PAGE_SIZE };
 
     function connMessage(view, msg) {
-      view.replaceChildren(backLink());
-      const p = document.createElement("p");
-      p.className = "run-msg";
-      p.textContent = msg;
-      view.appendChild(p);
+      const status = resetView(view);
+      view.insertBefore(backLink(), status);
+      announce(status, msg);
     }
 
     function renderConnectivity(view, data) {
-      view.replaceChildren();
+      resetView(view);
       view.appendChild(backLink());
       const systems = Array.isArray(data.systems) ? data.systems : [];
-      const offline = systems.filter((s) => s.status === "OFFLINE").length;
+      const matching = ListView.filterConnectivity(systems, connListState);
+      const visible = ListView.visible(matching, connListState.shown);
+      const roll = data.rollup || {};
+      const h = roll.hhm || {};
+      const m = roll.mmb || {};
+      const sum = (key) => (h[key] || 0) + (m[key] || 0);
+      const offline = sum("offline");
+      const online = sum("online");
+      const unknown = sum("unknown");
+      const staleRows = sum("stale");
+      const current = online + offline + unknown;
 
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
@@ -1070,13 +1674,29 @@
 
       const sub = document.createElement("div");
       sub.className = "muted";
-      sub.textContent = `· ${systems.length} systems · ${offline} offline · as of ${fmtTime(data.asOf)} `;
-      const rb = document.createElement("button");
-      rb.type = "button";
-      rb.textContent = "refresh";
-      rb.addEventListener("click", showConnectivity); // re-fetch + re-render (runReq-guarded)
-      sub.appendChild(rb);
+      sub.textContent = `· ${systems.length} snapshot records · ${current} current (${online} online · ${offline} offline` +
+        (unknown ? ` · ${unknown} unknown` : "") + `) · ${staleRows} stale · as of ${fmtTime(data.asOf)} `;
+      sub.title = "Current = alert record checked within 45 minutes (30-minute source cadence + 15-minute grace). Stale rows are retained historical snapshots, not current connectivity claims.";
       view.appendChild(sub);
+
+      const controls = document.createElement("div"); controls.className = "controls";
+      controls.appendChild(searchControl("conn-search", "Search", connListState.search, (value) => {
+        connListState.search = value; connListState.shown = ListView.PAGE_SIZE; renderConnectivity(view, data);
+        const input = document.getElementById("conn-search"); if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+      }, "system / detail / category / phase"));
+      controls.appendChild(selectControl("Source", connListState.source, [["all", "All"], ["HHM", "HHM"], ["MMB", "MMB"]], (value) => {
+        connListState.source = value; connListState.shown = ListView.PAGE_SIZE; renderConnectivity(view, data);
+      }));
+      controls.appendChild(selectControl("Current state", connListState.state, [["all", "All"], ["OFFLINE", "Offline"], ["ONLINE", "Online"], ["UNKNOWN", "Unknown"], ["STALE", "Stale"]], (value) => {
+        connListState.state = value; connListState.shown = ListView.PAGE_SIZE; renderConnectivity(view, data);
+      }));
+      const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "clear filters";
+      clear.disabled = !connListState.search && connListState.source === "all" && connListState.state === "all";
+      clear.addEventListener("click", () => { Object.assign(connListState, { search: "", source: "all", state: "all", shown: ListView.PAGE_SIZE }); renderConnectivity(view, data); });
+      controls.appendChild(clear);
+      const count = document.createElement("span"); count.className = "muted";
+      count.textContent = listCount(visible.length, matching.length, systems.length, "snapshot rows");
+      controls.appendChild(count); view.appendChild(controls);
 
       if (!systems.length) {
         const p = document.createElement("p");
@@ -1085,20 +1705,26 @@
         view.appendChild(p);
         return;
       }
+      if (!matching.length) {
+        const p = document.createElement("p"); p.className = "muted"; p.textContent = "No connectivity rows match the active filters.";
+        view.appendChild(p); return;
+      }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Equipment connectivity snapshots");
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       // [header text, optional title]
       const headers = [
-        ["Source"], ["System"], ["Status"], ["Error"], ["Phase"], ["Detail"],
-        ["Data age", "how stale the equipment data is (capture time)"],
-        ["Last checked", "when the alert row was last written (inserted_at)"],
+        ["Source"], ["System"],
+        ["Current state", "last result only when the alert record was checked within 45 minutes; otherwise STALE"],
+        ["Last result", "raw result from the most recent retained acquisition attempt; may be historical"],
+        ["Error"], ["Phase"], ["Detail"],
+        ["Data age", "age of the last successfully captured equipment data; failures intentionally leave this old"],
+        ["Record age", "age of the alert snapshot row (inserted_at); current when 45 minutes or newer"],
         ["Host int.", "host intervention required"],
       ];
       for (const [text, title] of headers) {
-        const th = document.createElement("th");
-        th.textContent = text;
+        const th = headCell(text);
         if (title) th.title = title;
         htr.appendChild(th);
       }
@@ -1106,17 +1732,21 @@
       table.appendChild(thead);
       const tb = document.createElement("tbody");
       const frag = document.createDocumentFragment();
-      for (const s of systems) {
+      for (const s of visible) {
         const tr = document.createElement("tr");
-        if (s.status === "OFFLINE") tr.className = "row-ERROR";
+        if (s.operationalState === "OFFLINE") tr.className = "row-ERROR";
         tr.appendChild(cell(s.source));
         tr.appendChild(systemCell(s.systemId));
         const st = cell("");
         const b = document.createElement("span");
-        b.className = "badge " + (CONN_BADGE[s.status] || "unknown");
-        b.textContent = s.status;
+        b.className = "badge " + (CONN_BADGE[s.operationalState] || "unknown");
+        b.textContent = s.operationalState || "UNKNOWN";
+        b.title = s.operationalState === "STALE"
+          ? "snapshot record is older than the 45-minute freshness budget; last result is historical"
+          : "current result from a snapshot checked within 45 minutes";
         st.appendChild(b);
         tr.appendChild(st);
+        tr.appendChild(cell(s.lastResult || s.status || "UNKNOWN"));
         tr.appendChild(cell(s.errorCategory || "—"));
         tr.appendChild(cell(s.phase || "—"));
         tr.appendChild(cell(s.connectionError || "—", "err-msg"));
@@ -1127,7 +1757,11 @@
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
+      appendListMore(view, visible.length, matching.length, () => {
+        connListState.shown = ListView.nextCount(connListState.shown, matching.length);
+        renderConnectivity(view, data);
+      });
     }
 
     async function showConnectivity() {
@@ -1157,10 +1791,14 @@
     // is worst-first across all apps; the detail breaks one system down by (app, type,
     // func) and shows its classified connectivity state from alert.*.
 
+    const systemsListState = { search: "", health: "all", crossApp: false, shown: ListView.PAGE_SIZE };
+
     function renderSystems(view, data) {
-      view.replaceChildren();
+      resetView(view);
       view.appendChild(backLink());
       const systems = Array.isArray(data.systems) ? data.systems : [];
+      const matching = ListView.filterSystems(systems, systemsListState);
+      const visible = ListView.visible(matching, systemsListState.shown);
 
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
@@ -1172,9 +1810,28 @@
       const sub = document.createElement("div");
       sub.className = "muted";
       sub.textContent =
-        `· ${systems.length} systems · ${sum.errors} errors · ${sum.warns} warns · ` +
+        `· ${systems.length} systems${systems.length === 500 ? " (API cap reached; response may be truncated)" : ""} · ${sum.errors} errors · ${sum.warns} warns · ` +
         `${sum.crossApp} span >1 app · last ${data.windowHours}h · as of ${fmtTime(data.asOf)}`;
       view.appendChild(sub);
+
+      const controls = document.createElement("div"); controls.className = "controls";
+      controls.appendChild(searchControl("systems-search", "Search", systemsListState.search, (value) => {
+        systemsListState.search = value; systemsListState.shown = ListView.PAGE_SIZE; renderSystems(view, data);
+        const input = document.getElementById("systems-search"); if (input) { input.focus(); input.setSelectionRange(value.length, value.length); }
+      }, "system / app"));
+      controls.appendChild(selectControl("Issue type", systemsListState.health, [["all", "All"], ["errors", "Has errors"], ["warns", "Warn-only"]], (value) => {
+        systemsListState.health = value; systemsListState.shown = ListView.PAGE_SIZE; renderSystems(view, data);
+      }));
+      controls.appendChild(checkboxControl("cross-app only", systemsListState.crossApp, (value) => {
+        systemsListState.crossApp = value; systemsListState.shown = ListView.PAGE_SIZE; renderSystems(view, data);
+      }));
+      const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "clear filters";
+      clear.disabled = !systemsListState.search && systemsListState.health === "all" && !systemsListState.crossApp;
+      clear.addEventListener("click", () => { Object.assign(systemsListState, { search: "", health: "all", crossApp: false, shown: ListView.PAGE_SIZE }); renderSystems(view, data); });
+      controls.appendChild(clear);
+      const count = document.createElement("span"); count.className = "muted";
+      count.textContent = listCount(visible.length, matching.length, systems.length, "response rows");
+      controls.appendChild(count); view.appendChild(controls);
 
       if (!systems.length) {
         const p = document.createElement("p");
@@ -1183,30 +1840,36 @@
         view.appendChild(p);
         return;
       }
+      if (!matching.length) {
+        const p = document.createElement("p"); p.className = "muted"; p.textContent = "No systems match the active filters.";
+        view.appendChild(p); return;
+      }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Systems with recent issues");
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["System", "Errors", "Warns", "Apps", "Last seen"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
       const frag = document.createDocumentFragment();
-      for (const s of systems) {
+      for (const s of visible) {
         const tr = document.createElement("tr");
-        if (s.errors > 0) tr.className = "row-ERROR";
-        else if (s.warns > 0) tr.className = "row-WARN";
         tr.appendChild(systemCell(s.systemId));
-        tr.appendChild(cell(s.errors, "num"));
-        tr.appendChild(cell(s.warns, "num"));
+        tr.appendChild(cell(s.errors, "num" + (s.errors > 0 ? " count-error" : "")));
+        tr.appendChild(cell(s.warns, "num" + (s.warns > 0 ? " count-warn" : "")));
         tr.appendChild(cell(s.apps.join(", ")));
-        tr.appendChild(cell(fmtTime(s.lastSeen)));
+        tr.appendChild(timeCell(s.lastSeen));
         frag.appendChild(tr);
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
+      appendListMore(view, visible.length, matching.length, () => {
+        systemsListState.shown = ListView.nextCount(systemsListState.shown, matching.length);
+        renderSystems(view, data);
+      });
     }
 
     async function showSystems() {
@@ -1229,7 +1892,7 @@
     }
 
     function renderSystem(view, data) {
-      view.replaceChildren();
+      resetView(view);
       view.appendChild(backLink());
       const breakdown = Array.isArray(data.breakdown) ? data.breakdown : [];
       const conn = Array.isArray(data.connectivity) ? data.connectivity : [];
@@ -1237,13 +1900,17 @@
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
       h2.style.margin = ".4rem 0 .2rem";
-      h2.textContent = "System " + (data.systemId || "?");
+      h2.textContent = (activeRoute.id === "entity" ? "Entity " : "System ") + (data.systemId || "?");
       view.appendChild(h2);
 
       const sub = document.createElement("div");
       sub.className = "muted";
       const connText = conn.length
-        ? conn.map((c) => `${c.source}: ${c.status}${c.errorCategory ? " (" + c.errorCategory + ")" : ""}`).join(" · ")
+        ? conn.map((c) => {
+          const current = c.operationalState || "STALE";
+          const historical = current === "STALE" ? ` (last result ${c.lastResult || c.status || "UNKNOWN"})` : "";
+          return `${c.source}: ${current}${historical}${c.errorCategory ? " (" + c.errorCategory + ")" : ""}`;
+        }).join(" · ")
         : "no connectivity record";
       sub.textContent = `· last ${data.windowHours}h · as of ${fmtTime(data.asOf)} · ${connText}`;
       view.appendChild(sub);
@@ -1256,11 +1923,11 @@
         return;
       }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Issue breakdown for system " + (data.systemId || "unknown"));
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["App", "Type", "Func", "Count", "Latest run"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
@@ -1289,7 +1956,7 @@
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
     }
 
     async function showSystem(systemId) {
@@ -1315,15 +1982,16 @@
     // --- incidents views (Phase 19) ------------------------------------------
     // Read-only window onto incident-engine's `incidents` schema: the raw error
     // firehose collapsed to one row per distinct problem x affected equipment,
-    // classified and severity-assessed upstream. The tile row doubles as the filter
-    // UI and as a self-check (tile counts come from the same response's GROUP BY).
+    // classified and severity-assessed upstream. Tiles plus the category facet are
+    // filter controls and a self-check (counts share the response's GROUP BY).
     //
     // Provenance rule (from the producer's integration brief): when categorySource
     // is 'oracle', the category is a corroborated hint about the equipment's recent
     // past -- NOT a diagnosis of this incident -- so it renders as a dashed, muted
     // badge with an explanatory tooltip, never as a plain diagnosed category.
 
-    let incFilters = { severity: "all", state: "all" };
+    let incFilters = { severity: "all", state: "all", category: "all" };
+    let incidentsState = null;
 
     const ORACLE_TIP = "corroborated from the equipment's recent history (oracle) — not a diagnosis of this incident";
 
@@ -1365,14 +2033,14 @@
     // Entities are usually equipment ids (SME…) that have a cross-app system view;
     // __global__ (unattributable events) and anything else render as plain text.
     function entityCell(entity) {
-      if (entity && /^SME/i.test(entity)) return systemCell(entity);
+      if (Routes.safeId(entity) && entity.startsWith("SME")) return systemCell(entity);
       return cell(entity === "__global__" ? "(global)" : entity || "—");
     }
 
     function tile(label, n, cls, active, onClick) {
       const el = document.createElement(onClick ? "button" : "div");
       el.className = "tile";
-      if (onClick) { el.setAttribute("aria-pressed", String(!!active)); el.addEventListener("click", onClick); }
+      if (onClick) { el.setAttribute("aria-pressed", String(!!active)); el.disabled = n === 0 && !active; el.addEventListener("click", onClick); }
       const b = document.createElement("b");
       b.textContent = n;
       if (cls) { const dot = document.createElement("span"); dot.className = "badge " + cls; dot.textContent = label; el.appendChild(b); el.appendChild(dot); }
@@ -1380,24 +2048,85 @@
       return el;
     }
 
-    function renderIncidents(view, data) {
-      view.replaceChildren();
+    function renderIncidents(view, data, focusTarget) {
+      resetView(view);
       view.appendChild(backLink());
       const incidents = Array.isArray(data.incidents) ? data.incidents : [];
-      const roll = data.rollup || { total: 0, bySeverity: {}, byState: {} };
+      const roll = data.rollup || { total: 0, bySeverity: {}, byState: {}, byCategory: [] };
+      // The API echoes normalized filters. Adopt them so UI state cannot claim a
+      // value the server rejected or normalized.
+      if (data.filters) {
+        incFilters.severity = data.filters.severity || "all";
+        incFilters.state = data.filters.state || "all";
+        incFilters.category = data.filters.category || "all";
+      }
 
       const h2 = document.createElement("h2");
       h2.style.fontSize = ".95rem";
       h2.style.margin = ".4rem 0 .2rem";
-      h2.textContent = "Incidents";
+      h2.textContent = "Incident list";
       view.appendChild(h2);
 
       const sub = document.createElement("div");
       sub.className = "muted";
-      const filtering = incFilters.severity !== "all" || incFilters.state !== "all";
-      sub.textContent = `· ${roll.total} incidents` + (filtering ? ` · showing ${incidents.length}` : "") +
+      const filtering = incFilters.severity !== "all" || incFilters.state !== "all" || incFilters.category !== "all";
+      sub.textContent = `· ${incidents.length} loaded · ${roll.total} incidents overall` +
+        (data.nextCursor ? " · more matching rows available" : " · end of matching rows") +
         ` · from incident-engine · as of ${fmtTime(data.asOf)}`;
       view.appendChild(sub);
+
+      // Compact category facet: global counts use the same rollup table as the
+      // severity/state tiles. It composes server-side with both existing filters.
+      const controls = document.createElement("div");
+      controls.className = "controls";
+      const categoryLabel = document.createElement("label");
+      categoryLabel.appendChild(document.createTextNode("Category "));
+      const categorySelect = document.createElement("select");
+      categorySelect.id = "incident-category";
+      categorySelect.setAttribute("aria-label", "filter incidents by category");
+      const allOption = document.createElement("option");
+      allOption.value = "all";
+      allOption.textContent = `All categories (${roll.total || 0})`;
+      categorySelect.appendChild(allOption);
+      const categories = Array.isArray(roll.byCategory) ? roll.byCategory : [];
+      for (const item of categories) {
+        const option = document.createElement("option");
+        option.value = item.category;
+        option.textContent = `${item.category} (${item.count})`;
+        categorySelect.appendChild(option);
+      }
+      // Defensive compatibility if a filtered response names a facet missing from
+      // a malformed/older rollup: keep the active state visible rather than reset it.
+      if (incFilters.category !== "all" && !categories.some((item) => item.category === incFilters.category)) {
+        const option = document.createElement("option");
+        option.value = incFilters.category;
+        option.textContent = incFilters.category;
+        categorySelect.appendChild(option);
+      }
+      categorySelect.value = incFilters.category;
+      categorySelect.addEventListener("change", () => {
+        incFilters.category = categorySelect.value;
+        showIncidents("category");
+      });
+      categoryLabel.appendChild(categorySelect);
+      controls.appendChild(categoryLabel);
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.textContent = "clear filters";
+      clear.disabled = !filtering;
+      clear.addEventListener("click", () => {
+        incFilters = { severity: "all", state: "all", category: "all" };
+        showIncidents();
+      });
+      controls.appendChild(clear);
+      if (filtering) {
+        const active = document.createElement("span");
+        active.className = "muted";
+        active.textContent = "active: " + [incFilters.severity, incFilters.state, incFilters.category]
+          .filter((value) => value !== "all").join(" · ");
+        controls.appendChild(active);
+      }
+      view.appendChild(controls);
 
       // Tile row = rollup + filters. Clicking a tile toggles that filter and refetches.
       const tiles = document.createElement("div");
@@ -1425,14 +2154,15 @@
         p.className = "muted";
         p.textContent = filtering ? "No incidents match the active filters." : "No incidents.";
         view.appendChild(p);
+        if (focusTarget === "category") requestAnimationFrame(() => document.getElementById("incident-category")?.focus());
         return;
       }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Incident list");
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["Severity", "State", "Category", "Entity", "Last seen", "Count", ""]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
@@ -1445,48 +2175,94 @@
         const st = cell(""); st.appendChild(stateBadge(i.state)); tr.appendChild(st);
         tr.appendChild(categoryCell(i.category, i.categorySource));
         tr.appendChild(entityCell(i.entity));
-        tr.appendChild(cell(fmtTime(i.lastSeen)));
+        tr.appendChild(timeCell(i.lastSeen));
         tr.appendChild(cell(i.occurrenceCount, "num"));
         const td = document.createElement("td");
         const a = document.createElement("a");
-        a.href = "#incident=" + encodeURIComponent(i.id);
+        a.href = "#incident=" + encodeURIComponent(i.id) + "&from=" + encodeURIComponent(fromToken());
         a.textContent = "view ›";
         td.appendChild(a); tr.appendChild(td);
         frag.appendChild(tr);
       }
       tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
+      if (data.nextCursor) {
+        const more = document.createElement("button"); more.type = "button";
+        more.dataset.incidentsMore = "true";
+        more.textContent = data.loading ? "loading…" : "load more incidents";
+        more.disabled = !!data.loading; more.style.marginTop = ".8rem";
+        more.addEventListener("click", loadMoreIncidents);
+        view.appendChild(more);
+      }
+      if (focusTarget === "category") requestAnimationFrame(() => document.getElementById("incident-category")?.focus());
+      else if (data.focusAfterLoad && !data.loading) {
+        data.focusAfterLoad = false;
+        requestAnimationFrame(() => (view.querySelector("[data-incidents-more]") || view.querySelector(".table-scroll"))?.focus());
+      }
     }
 
-    async function showIncidents() {
+    function incidentListUrl(cursor) {
+      const p = new URLSearchParams();
+      p.set("limit", "100");
+      if (incFilters.severity !== "all") p.set("severity", incFilters.severity);
+      if (incFilters.state !== "all") p.set("state", incFilters.state);
+      if (incFilters.category !== "all") p.set("category", incFilters.category);
+      if (cursor) p.set("cursor", cursor);
+      return "/api/incidents?" + p.toString();
+    }
+
+    async function showIncidents(focusTarget) {
       const myReq = ++runReq;
       hideAllViews();
       const view = document.getElementById("incidents-view");
       view.hidden = false;
-      window.scrollTo(0, 0);
-      connMessage(view, "Loading incidents…");
-      const p = new URLSearchParams();
-      if (incFilters.severity !== "all") p.set("severity", incFilters.severity);
-      if (incFilters.state !== "all") p.set("state", incFilters.state);
-      const qs = p.toString();
+      if (!focusTarget) { window.scrollTo(0, 0); connMessage(view, "Loading incidents…"); }
+      else announce(routeStatus(view), "Loading incidents…");
+      const fail = (message) => focusTarget ? announce(routeStatus(view), message) : connMessage(view, message);
       let res;
-      try { res = await fetch("/api/incidents" + (qs ? "?" + qs : "")); }
-      catch { if (myReq === runReq) connMessage(view, "Couldn't load incidents."); return; }
+      try { res = await fetch(incidentListUrl(null)); }
+      catch { if (myReq === runReq) fail("Couldn't load incidents."); return; }
       if (myReq !== runReq) return;
-      if (!res.ok) return connMessage(view, "Couldn't load incidents.");
+      if (!res.ok) return fail("Couldn't load incidents.");
       let data;
       try { data = await res.json(); }
-      catch { if (myReq === runReq) connMessage(view, "Couldn't load incidents."); return; }
+      catch { if (myReq === runReq) fail("Couldn't load incidents."); return; }
       if (myReq !== runReq) return;
-      renderIncidents(view, data);
+      incidentsState = { ...data, incidents: Array.isArray(data.incidents) ? data.incidents : [], loading: false, req: myReq };
+      renderIncidents(view, incidentsState, focusTarget);
+    }
+
+    async function loadMoreIncidents() {
+      const st = incidentsState;
+      if (!st || st.loading || !st.nextCursor) return;
+      const myReq = st.req;
+      const cursor = st.nextCursor;
+      st.loading = true; st.focusAfterLoad = true;
+      renderIncidents(document.getElementById("incidents-view"), st);
+      let res;
+      try { res = await fetch(incidentListUrl(cursor)); }
+      catch { st.loading = false; if (myReq === runReq) renderIncidents(document.getElementById("incidents-view"), st); return; }
+      if (myReq !== runReq) return;
+      if (!res.ok) { st.loading = false; renderIncidents(document.getElementById("incidents-view"), st); return; }
+      let data;
+      try { data = await res.json(); }
+      catch { st.loading = false; if (myReq === runReq) renderIncidents(document.getElementById("incidents-view"), st); return; }
+      if (myReq !== runReq) return;
+      const seen = new Set(st.incidents.map((i) => i.id));
+      for (const incident of (Array.isArray(data.incidents) ? data.incidents : [])) {
+        if (!seen.has(incident.id)) { seen.add(incident.id); st.incidents.push(incident); }
+      }
+      st.nextCursor = data.nextCursor;
+      st.count = st.incidents.length;
+      st.asOf = data.asOf;
+      st.loading = false;
+      renderIncidents(document.getElementById("incidents-view"), st);
     }
 
     function renderIncident(view, data) {
-      view.replaceChildren();
-      const back = document.createElement("a");
-      back.href = "#incidents"; back.textContent = "← incidents"; back.className = "muted";
-      view.appendChild(back);
+      resetView(view);
+      view.appendChild(backLink());
       const i = data.incident || {};
       const events = Array.isArray(data.events) ? data.events : [];
 
@@ -1541,24 +2317,19 @@
       }
 
       if (i.sampleMessage) {
-        const pre = document.createElement("div");
-        pre.className = "err-msg";
-        pre.textContent = i.sampleMessage;
-        view.appendChild(pre);
+        const label = document.createElement("div");
+        label.className = "muted"; label.textContent = "sample message";
+        view.appendChild(label);
+        view.appendChild(expandableText(i.sampleMessage, "err-msg"));
       }
 
       const evHead = document.createElement("h2");
       evHead.style.fontSize = ".9rem";
       evHead.style.margin = "1rem 0 .2rem";
-      // When the list is capped, say so against the incident's true total
-      // (occurrenceCount) -- "100 events" when there are 667 misleads the operator.
-      evHead.textContent =
-        events.length >= data.eventLimit && i.occurrenceCount > events.length
-          ? `Events (newest ${events.length} of ${i.occurrenceCount})`
-          : `Events (${events.length})`;
       view.appendChild(evHead);
 
       if (!events.length) {
+        evHead.textContent = "Events (0 fetched)";
         const p = document.createElement("p");
         p.className = "muted";
         p.textContent = "No events retained for this incident (source rows may have aged out).";
@@ -1566,44 +2337,68 @@
         return;
       }
 
-      const table = document.createElement("table");
+      const table = prepareTable(document.createElement("table"), "Events for incident " + i.id);
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
       for (const h of ["When", "App", "Type", "Func", "Category", "Message", "Run"]) {
-        const th = document.createElement("th"); th.textContent = h; htr.appendChild(th);
+        htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
-      const frag = document.createDocumentFragment();
-      for (const e of events) {
-        const tr = document.createElement("tr");
-        if (e.type === "ERROR" || e.type === "WARN") tr.className = "row-" + e.type;
-        tr.appendChild(cell(fmtTime(e.dt)));
-        tr.appendChild(cell(e.app));
-        const ty = cell("");
-        const badge = document.createElement("span");
-        badge.className = "badge " + (TYPE_CLASS[e.type] || "INFO");
-        badge.textContent = e.type;
-        ty.appendChild(badge); tr.appendChild(ty);
-        tr.appendChild(cell(e.func || "—"));
-        tr.appendChild(cell(e.category));
-        const msg = document.createElement("td");
-        msg.className = "detail";
-        msg.textContent = e.message || "—";
-        tr.appendChild(msg);
-        const runTd = document.createElement("td");
-        if (e.runId) {
-          const a = document.createElement("a");
-          a.href = runHref(e.runId, e.insertedAt);
-          a.textContent = "view ›";
-          runTd.appendChild(a);
-        } else { runTd.textContent = "—"; }
-        tr.appendChild(runTd);
-        frag.appendChild(tr);
-      }
-      tb.appendChild(frag);
       table.appendChild(tb);
-      view.appendChild(table);
+      appendTable(view, table);
+      const moreBox = document.createElement("div");
+      moreBox.className = "cap-note";
+      view.appendChild(moreBox);
+
+      let eventShown = FeedView.initialCount(events.length);
+      const eventExpanded = new Set();
+      const renderEventPage = (focusMore = false) => {
+        evHead.textContent = `Events (${FeedView.countText(eventShown, events.length, i.occurrenceCount)})`;
+        tb.replaceChildren();
+        const frag = document.createDocumentFragment();
+        for (let eventIndex = 0; eventIndex < eventShown; eventIndex++) {
+          const e = events[eventIndex];
+          const tr = document.createElement("tr");
+          if (e.type === "ERROR" || e.type === "WARN") tr.className = "row-" + e.type;
+          tr.appendChild(timeCell(e.dt));
+          tr.appendChild(cell(e.app));
+          const ty = cell("");
+          const badge = document.createElement("span");
+          badge.className = "badge " + (TYPE_CLASS[e.type] || "INFO");
+          badge.textContent = e.type;
+          ty.appendChild(badge); tr.appendChild(ty);
+          tr.appendChild(cell(e.func || "—"));
+          tr.appendChild(cell(e.category));
+          const msg = document.createElement("td");
+          msg.appendChild(expandableText(e.message || "—", "detail", eventExpanded, "incident-event-" + eventIndex));
+          tr.appendChild(msg);
+          const runTd = document.createElement("td");
+          if (e.runId) {
+            const a = document.createElement("a");
+            a.href = runHref(e.runId, e.insertedAt);
+            a.textContent = "view ›";
+            runTd.appendChild(a);
+          } else { runTd.textContent = "—"; }
+          tr.appendChild(runTd);
+          frag.appendChild(tr);
+        }
+        tb.appendChild(frag);
+        moreBox.replaceChildren();
+        if (eventShown < events.length) {
+          const more = document.createElement("button"); more.type = "button";
+          more.dataset.incidentEventsMore = "true";
+          const next = FeedView.nextCount(eventShown, events.length);
+          more.textContent = `show ${next - eventShown} more events`;
+          more.addEventListener("click", () => { eventShown = next; renderEventPage(true); });
+          moreBox.appendChild(more);
+        }
+        if (focusMore) {
+          const target = moreBox.querySelector("[data-incident-events-more]") || view.querySelector(".table-scroll");
+          if (target) target.focus();
+        }
+      };
+      renderEventPage();
     }
 
     async function showIncident(id) {
@@ -1627,33 +2422,46 @@
       renderIncident(view, data);
     }
 
-    function route() {
-      const hash = location.hash.slice(1);
-      if (hash.startsWith("run=")) {
-        const p = new URLSearchParams(hash);
-        showRun(p.get("run"), p.get("at"));
-      } else if (hash === "connectivity") {
-        showConnectivity();
-      } else if (hash === "acq-systems") {
-        showAcqSystems();
-      } else if (hash === "systems") {
-        showSystems();
-      } else if (hash.startsWith("system=")) {
-        showSystem(decodeURIComponent(hash.slice("system=".length)));
-      } else if (hash === "incidents") {
-        showIncidents();
-      } else if (hash.startsWith("incident=")) {
-        showIncident(decodeURIComponent(hash.slice("incident=".length)));
-      } else if (hash.startsWith("appruns=")) {
-        showAppRuns(decodeURIComponent(hash.slice("appruns=".length)));
-      } else {
-        showDashboard();
+    function applyChrome(r) {
+      document.title = r.documentTitle;
+      document.getElementById("source-label").textContent = r.source;
+      document.getElementById("meta").textContent = "· " + r.label;
+      for (const id of ["entities", "incident-list", "jobs", "connectivity", "systems"]) {
+        const link = document.getElementById("nav-" + id);
+        if (r.nav === id) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
       }
+      if (r.id === "jobs" && gridData) renderSummary(GridView.filterJobs(gridData.jobs || [], { search: gridView.search, statuses: gridView.statuses }).length);
     }
 
-    document.getElementById("refresh").addEventListener("click", refresh);
+    function route() {
+      const r = Routes.parse(location.hash);
+      activeRoute = r;
+      applyChrome(r);
+      if (r.id === "entities") currentRefresh = showEntities;
+      else if (r.id === "jobs") { currentRefresh = refresh; showDashboard(); return; }
+      else if (r.id === "run") currentRefresh = () => showRun(r.params.run, r.params.at);
+      else if (r.id === "connectivity") currentRefresh = showConnectivity;
+      else if (r.id === "acq") currentRefresh = showAcqSystems;
+      else if (r.id === "systems") currentRefresh = showSystems;
+      else if (r.id === "entity") currentRefresh = () => showSystem(r.params.entity);
+      else if (r.id === "system") currentRefresh = () => showSystem(r.params.system);
+      else if (r.id === "incident-list") currentRefresh = showIncidents;
+      else if (r.id === "incident") currentRefresh = () => showIncident(r.params.incident);
+      else if (r.id === "appruns") currentRefresh = () => showAppRuns(r.params.app, appRunsState && appRunsState.app === r.params.app ? appRunsState.status : "all");
+      else currentRefresh = showEntities;
+      currentRefresh();
+    }
+
+    document.getElementById("refresh").addEventListener("click", async () => {
+      const button = document.getElementById("refresh");
+      const handler = currentRefresh;
+      button.disabled = true; button.textContent = "refreshing…";
+      try { await handler(); }
+      finally { button.disabled = false; button.textContent = "refresh"; }
+    });
     window.addEventListener("hashchange", route);
     initGridControls();
+    initEntityControls();
     route();
   </script>
 </body>

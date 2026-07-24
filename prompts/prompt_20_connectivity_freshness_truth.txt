@@ -1,0 +1,84 @@
+Phase 20 - Connectivity Freshness & Truthful Current State
+
+Phase goal:
+Make the Connectivity view and dashboard rollup truthful about what is current.
+An old successful acquisition must not read as evidence that equipment is ONLINE
+now; preserve the last recorded result, but distinguish it from record/data
+freshness and derive an operational state only when the evidence is fresh.
+
+Background (from the 2026-07-21 UX review; revalidate before coding):
+- GET /api/connectivity currently returns 539 rows: 307 ONLINE, 108 OFFLINE, and
+  124 UNKNOWN. ONLINE/OFFLINE/UNKNOWN is derived only from
+  successful_acquisition in lib/connectivity.js.
+- 146 of the 307 rows labeled ONLINE had capture data older than 48h; 47 were
+  older than 30d. UNKNOWN rows had a median capture age around 517d.
+- The grid rollup reports only OFFLINE counts, omitting UNKNOWN/stale records.
+- alert.offline_hhm_conn / offline_mmb_conn are one-row-per-system snapshots;
+  capture_datetime and inserted_at are distinct clocks. Their age/lifecycle and
+  retired-system behavior must be understood before choosing freshness thresholds.
+
+Decision gate (must happen before implementation):
+- Inspect the producer semantics in data_acquisition and confirm live distributions
+  of capture_datetime, inserted_at, successful_acquisition, source, and known active
+  versus retired systems.
+- Establish and document a source-specific freshness budget with provenance. Do not
+  invent a threshold from the screenshot. Prefer an existing producer cadence or
+  documented operational expectation. If no defensible threshold can be confirmed,
+  implement the safe fallback: label ONLINE/OFFLINE as "last result", expose both
+  ages prominently, and do not claim a current ONLINE count.
+- Record the chosen rule in docs/connectivity-schema.md and the phase log. If the
+  threshold is configurable, document the variable in .env.example and
+  markdown/ENVIRONMENT.md; do not add configuration without a demonstrated need.
+
+Implementation scope:
+- lib/connectivity.js: preserve the raw last-result status, add pure freshness and
+  operational-state derivation using injected now + the confirmed budget(s), and
+  sort current failures/indeterminate records ahead of current successes and old
+  historical records. Keep capture age and checked age separate.
+- API: add fields/rollup data additively so consumers can distinguish lastResult,
+  freshness, and operationalState. The rollup must include indeterminate/stale
+  counts, not only offline counts. Existing raw fields stay available.
+- Frontend: relabel status so "last result" cannot be mistaken for current state;
+  render explicit stale/indeterminate badges and a summary that accounts for every
+  row. The data_acquisition grid badge must not claim health from offline counts
+  alone. Provide clear tooltip/help copy explaining the two clocks.
+- Tests: cover fresh online/offline, stale formerly-online, null result, missing or
+  invalid timestamps, source-specific budgets, boundary equality, future clock skew,
+  sorting, and rollup arithmetic. Inject now; no wall-clock-dependent unit tests.
+- Docs: update docs/connectivity-schema.md and any architecture/environment docs
+  affected by the chosen rule.
+
+Explicit non-goals:
+- Do not modify data_acquisition or either alert table.
+- No writes, DDL, new grant, new cache, or new dependency.
+- No equipment retirement workflow or inventory-management system.
+- Do not fold the general age-formatting/presentation work from Phase 26 into this
+  phase beyond copy required to make connectivity truthful.
+- Do not hide stale rows; expose and classify them honestly.
+
+Expected files / layers:
+- lib/connectivity.js, test/connectivity.test.js, server.js only if response shaping
+  changes, public/index.html, docs/connectivity-schema.md, and optionally
+  .env.example + markdown/ENVIRONMENT.md when configuration is justified.
+
+Validation commands:
+- docker run --rm -v "$PWD":/w -w /w node:lts node --test
+- Live read-only probes grouping counts/age distributions by source and raw result.
+- Live smoke: /api/connectivity rollup reconciles exactly with systems[]; old
+  successful records no longer read as current ONLINE; grid and dedicated view agree.
+
+Read-only / least-privilege constraints:
+- Existing SELECT-only alert grants are sufficient. No SQL write or grant expansion.
+- If live verification reads another source, it is diagnostic only and must not
+  broaden the deployed app's credential surface without a separately approved phase.
+
+Schema assumptions to confirm live:
+- One current snapshot row per (source, system_id); exact timestamp semantics; null
+  behavior; update cadence; and whether retired systems remain indefinitely.
+
+Review questions:
+- Can any stale or indeterminate row still be presented as currently ONLINE?
+- Is the freshness budget evidenced and source-appropriate rather than arbitrary?
+- Do API, rollup, grid badge, and table use the same pure classification rule?
+- Do counts reconcile across every state, including null/malformed timestamps?
+- Is raw last-result evidence preserved instead of rewritten or hidden?

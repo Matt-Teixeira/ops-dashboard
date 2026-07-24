@@ -1,0 +1,230 @@
+Phase 30 - Incident Entity Summary Contract
+
+Phase goal:
+Create the smallest truthful, complete, server-aggregated read model needed for one
+incident card per SME, without downloading the incident list and regrouping a page of
+it in the browser. Preserve every non-SME incident in an explicit reconciliation
+bucket. This phase is backend/API only and deliberately avoids broader entity-context
+or cross-source composition.
+
+Why this phase exists:
+- `incidents.incidents` is one row per `(fingerprint, entity)`, not one row per SME.
+  The current `/api/incidents` list is keyset-paged and therefore cannot be safely
+  regrouped client-side into complete entity cards.
+- A read-only live profile on 2026-07-21 found 529 incident rows across 231 entities:
+  517 rows across 229 `SME*` entities, 11 `__global__` rows, and one `RTT00001` row.
+  There were 173 SME entities with active work. Median/p90/max incidents per SME were
+  2/5/12. Treat these as sizing evidence, not fixed acceptance values.
+- The card contract must distinguish incident count from summed occurrences, active
+  from terminal state, and category provenance. Connectivity and recent run-log
+  context are not required to make the first card system trustworthy.
+
+Prerequisites and authoritative context:
+- Read `CLAUDE.md`, `markdown/FLOW.md`, `markdown/ARCHITECTURE_PRINCIPLES.md`,
+  `markdown/REVIEW_CHECKLIST.md`, recent `markdown/PHASE_LOG.md`, the Phase
+  19/21/24/29 prompts, and the producer incident schema/brief referenced by Phase 19.
+- Run `git status --short`. Preserve the uncommitted Phase 20-29 series and all review
+  evidence. Do not switch branches while that work is dirty unless the developer has
+  deliberately resolved it.
+- Phase 29 and its independent review are the implementation baseline. Do not weaken
+  its cursor, note-fidelity, chrome-ownership, sticky, focus, or accessibility fixes.
+
+Implementation scope:
+
+1. Establish shared entity and incident-state semantics
+   - Add a small pure server helper (prefer `lib/entities.js`) that classifies an entity
+     without rewriting it:
+       - `sme`: canonical values beginning with `SME` and otherwise matching the
+         existing safe system-id character contract;
+       - `global`: exactly `__global__`;
+       - `other`: every other non-empty producer value.
+   - Confirm the exact live SME shape before freezing the predicate. Keep the predicate
+     shared by shaping, route validation where relevant, and tests; do not duplicate a
+     looser SQL-only/browser-only interpretation.
+   - Reuse the Phase 21 active-state definition exactly: `open`, `recurring`, and
+     `acknowledged` are active; `resolved` and `suppressed` are terminal. Preserve an
+     explicit `other` count for future producer values rather than silently dropping
+     them.
+   - Reuse the existing severity order (`critical`, `high`, `medium`, `low`, `info`,
+     then unknown) and category provenance semantics. An oracle category remains a
+     corroborated hint, never a diagnosis.
+
+2. Add a server-side entity aggregation query
+   - Add an incident-entity summary query in `db/queries.js`. It must aggregate the
+     complete `incidents.incidents` table by producer `entity`; do not aggregate a
+     cursor page and do not add a silent `LIMIT`.
+   - Return enough bounded scalar/array data to shape, for every entity:
+       - total incident count, active incident count, terminal count, and other-state
+         count;
+       - complete known state/severity counts with zero defaults plus unknown/other;
+       - active severity counts and the worst active severity;
+       - summed `occurrence_count` (distinctly named and never presented as incident
+         count), earliest `first_seen`, oldest active `first_seen`, and latest
+         `last_seen`;
+       - distinct sorted apps and app count;
+       - category rows/counts including active count and every observed
+         `category_source`, so provenance is not flattened away.
+   - Keep summed occurrences lossless. Because PostgreSQL `sum(bigint)` may outgrow a
+     JavaScript safe integer, expose it as a decimal string consistently; do not emit a
+     number for small entities and a string for large ones.
+   - Use deterministic ordering: entities with active work first, then worst active
+     severity, active incident count descending, latest seen descending/nulls last,
+     then entity ascending. Category metadata is active count descending, total count
+     descending, then category ascending.
+   - Avoid row multiplication from apps/categories. If multiple small grouped queries
+     plus a pure merge are clearer and safer than one nested aggregate, use them; never
+     issue one query per entity.
+
+3. Shape and reconcile the response in a pure module
+   - Add pure functions and focused tests for query-row shaping, entity classification,
+     category/source merging, ordering, zero defaults, unusual values, and
+     non-array/null defensive inputs.
+   - The response contract for `GET /api/entities` must be additive and explicit:
+
+     {
+       "asOf": "...",
+       "count": 229,
+       "summary": {
+         "entityCount": 229,
+         "entitiesWithActive": 173,
+         "incidentCount": 517,
+         "activeIncidentCount": 355,
+         "occurrenceCount": "...",
+         "bySeverity": { "critical": 0, "high": 0, "medium": 0,
+                         "low": 0, "info": 0, "other": 0 },
+         "byState": { "open": 0, "recurring": 0, "acknowledged": 0,
+                      "resolved": 0, "suppressed": 0, "other": 0 },
+         "nonSme": { "entityCount": 2, "incidentCount": 12,
+                     "activeIncidentCount": 12, "occurrenceCount": "..." }
+       },
+       "entities": [
+         {
+           "entity": "SME01139",
+           "entityKind": "sme",
+           "incidentCount": 9,
+           "activeIncidentCount": 9,
+           "terminalIncidentCount": 0,
+           "otherStateCount": 0,
+           "byState": {},
+           "bySeverity": {},
+           "activeBySeverity": {},
+           "worstActiveSeverity": "medium",
+           "occurrenceCount": "6800",
+           "firstSeen": "...",
+           "oldestActiveFirstSeen": "...",
+           "lastSeen": "...",
+           "appCount": 2,
+           "apps": [],
+           "categories": [
+             { "category": "rsync_io_timeout", "count": 3,
+               "activeCount": 3, "sources": ["classifier"] }
+           ]
+         }
+       ],
+       "nonSmeEntities": []
+     }
+
+   - Values above illustrate shape only. Do not hardcode snapshot counts or fabricate a
+     critical severity that the live dataset does not contain.
+   - `entities` contains only `entityKind: "sme"`. `nonSmeEntities` contains complete
+     grouped incident summaries for `global` and `other`. The two arrays plus response
+     summary must reconcile to the full incidents rollup at the same observation point.
+
+4. Add the read-only API route
+   - Add `GET /api/entities` in `server.js` with a single `asOf` generated by the
+     request handler.
+   - Keep the handler thin. DB failures use the existing sanitized 500 path. Do not
+     expose SQL, role, cursor, or producer internals in error responses.
+   - No cache is required at current scale: this is a small schema-local aggregation
+     comparable to the existing incident rollup. Measure it live before accepting
+     request-path use.
+   - Do not modify `/api/incidents`, `/api/systems`, or frontend routes in this phase.
+
+Expected files / layers:
+- `db/queries.js` for grouped read-only query/query functions.
+- `lib/entities.js` (new) for pure incident semantics and response shaping.
+- `test/entities.test.js` (new), plus a narrow server/API test only if the existing
+  test harness supports it without introducing a framework.
+- `server.js` for `GET /api/entities`.
+- `markdown/PROMPTS.md` and `markdown/PHASE_LOG.md` only when implementing/logging the
+  phase. No public HTML/CSS/route file should change.
+
+Explicit non-goals:
+- No card UI, main-route change, entity detail page, raw incident-list redesign, or
+  job-dashboard move; those are Phases 31-32.
+- No incident-engine change, write-back, acknowledgement control, notifications,
+  auth, framework, frontend dependency, cache, DB schema/index/DDL/grant change, or
+  new environment variable.
+- No client-side grouping of a paged incident result and no truncation sentinel. The
+  API contract is complete by construction.
+- No join/read of `alert.*`, `stats.*`, or `util.app_run_logs` in this phase. Incident
+  apps/categories/counts/times are sufficient metadata for the first card design.
+  Connectivity and recent cross-app signals belong only to the conditional Phase 32.
+- No change to Phase 20 connectivity budgets or Phase 24 incident cursor ordering.
+
+Read-only / least-privilege constraints:
+- Preserve `ops_dashboard_ro`; use SELECT only on the already granted
+  `incidents.incidents` surface. No writes, DDL, grants, or producer repository changes.
+- Bind all values even though this endpoint takes no filters today. Do not interpolate
+  entity/category/source data into SQL.
+- Do not read `incidents.error_events`, `incidents.pipeline_state`, or
+  `util.app_run_logs.verbose_log`.
+
+Schema/data assumptions to confirm live before implementation:
+- Exact `incidents.incidents` types for `entity`, `apps`, state/severity/category,
+  `category_source`, occurrence/timestamp columns, and nullable values.
+- Current distinct producer entity shapes, including all non-SME values; do not assume
+  only `__global__` exists.
+- Current and producer-allowed state/severity/category-source vocabularies.
+- The aggregation plan touches the small incidents table without a large detoast/sort
+  hazard.
+
+Required unit validation:
+- Classification: canonical SME, `__global__`, other safe entity, empty/unusual input.
+- Active/terminal/other state counts and known severity zero defaults.
+- Worst-active severity, deterministic entity order, deterministic category order.
+- Category provenance: classifier, oracle-only, and mixed sources all remain distinct.
+- App deduplication/sort, null arrays, and duplicate grouped rows.
+- Occurrence sums remain decimal strings and do not lose values beyond
+  `Number.MAX_SAFE_INTEGER`.
+- Reconciliation: SME + non-SME counts equal the complete grouped input on every axis.
+- SQL text guards: read-only SELECT, group by entity, no silent LIMIT, no
+  `error_events`, `pipeline_state`, `verbose_log`, write verb, or interpolation.
+
+Required live/integration validation:
+- Run the grouped SQL and `EXPLAIN (ANALYZE, BUFFERS)` as `ops_dashboard_ro`; record
+  row count, timing, and plan evidence without secrets.
+- Compare `/api/entities` against hand-run grouped SQL at the same moment, allowing
+  normal producer drift. Verify every SME occurs once and ordering is stable.
+- Reconcile entity plus non-SME incident/state/severity/occurrence totals with
+  `/api/incidents` and direct SQL. Explicitly verify `__global__` and every other
+  non-SME entity remain visible.
+- Spot-check entities with multiple incidents, apps, categories, lifecycle states, and
+  oracle/mixed category provenance.
+- Existing health, grid, incidents, incident detail, systems, and connectivity APIs
+  remain response-compatible.
+
+Validation commands:
+- `docker run --rm -v "$PWD":/w -w /w node:lts node --test`
+- Compile changed JS in `node:lts`.
+- `git diff --check` and `git status --short`.
+- Use the disposable port-18080 app for API smoke; do not restart port 8080 unless the
+  developer separately requests deployment.
+
+Documentation / completion gate:
+- Add a Phase 30 `markdown/PHASE_LOG.md` entry only after implementation and validation.
+  Record live cardinalities as an observation timestamp, query plan/timing, exact API
+  shape, classification semantics, reconciliation, and non-SME handling.
+- Mark Phase 30 Completed in `markdown/PROMPTS.md` only when the API is complete,
+  reconciled, pure-tested, reviewed, and read-only. Phase 31 must not regroup incident
+  pages as a substitute if this phase is incomplete.
+
+Review questions:
+- Can the entity summaries be proven complete, or did any LIMIT/page/client transform
+  make them partial?
+- Do SME plus non-SME summaries reconcile to the full incident rollup on every axis?
+- Are active state, worst severity, occurrences, and category provenance represented
+  without conflating their meanings?
+- Can an oracle-derived category be mistaken for a diagnosis after aggregation?
+- Is the endpoint one bounded grouped incident read, with no N+1, cross-source scope,
+  write, new grant, large JSON detoast, or unsafe interpolation?
