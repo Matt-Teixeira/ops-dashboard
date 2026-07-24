@@ -248,39 +248,51 @@ async function main() {
     "delayed context never filled its sections");
   await page.unroute("**/api/entities/" + entity + "*");
 
-  // 9d. GENUINE delayed A -> B -> Jobs: all three navigations happen while A's
-  // requests are still in flight (2s delay, navigations within ~100ms). Jobs
-  // must win, and A's and B's late completions must never repaint it.
-  await page.route("**/api/entities/*", async (route) => {
+  // 9d. GENUINE delayed A -> B -> Jobs. Each navigation is issued in its OWN
+  // browser task and we wait for that entity's request to actually START before
+  // the next — assigning the three hashes synchronously would collapse into one
+  // task where the hashchange handler only ever observes #jobs and A/B never
+  // fire (Codex Phase 32 third review). Entity responses are delayed 2s so A and
+  // B are provably in flight when Jobs supersedes them; their late completions
+  // must never repaint Jobs.
+  let aCtx = 0, bCtx = 0;
+  const delayThenContinue = async (route, count) => {
+    count();
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    await route.continue();
-  });
-  await page.route("**/api/incidents?*entity=*", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    await route.continue();
-  });
+    try { await route.continue(); } catch { /* superseded request already aborted */ }
+  };
+  await page.route("**/api/entities/" + entity + "*", (route) => delayThenContinue(route, () => { aCtx += 1; }));
+  await page.route("**/api/entities/" + cardTwo + "*", (route) => delayThenContinue(route, () => { bCtx += 1; }));
+  await page.route("**/api/incidents?*entity=*", (route) => delayThenContinue(route, () => {}));
   await resetRoute();
-  await page.evaluate(({ a, b }) => {
-    location.hash = "#entity=" + a;   // A: requests fire, delayed 2s
-    location.hash = "#entity=" + b;   // B: supersedes A before A lands
-    location.hash = "#jobs";          // Jobs: supersedes B, all still in flight
-  }, { a: entity, b: cardTwo });
+  // A: navigate, then PROVE A's context request began (throws on timeout).
+  const aReq = page.waitForRequest((r) => r.url().includes("/api/entities/" + entity), { timeout: 5000 });
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
+  await aReq;
+  // B: separate task; prove B's request began while A is still delayed in flight.
+  const bReq = page.waitForRequest((r) => r.url().includes("/api/entities/" + cardTwo), { timeout: 5000 });
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, cardTwo);
+  await bReq;
+  // Jobs: separate task; supersede B while both A and B responses are pending.
+  await page.evaluate(() => { location.hash = "#jobs"; });
   await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
   const midFlight = await page.evaluate(() => ({
     nav: document.querySelector("[aria-current=page]")?.id,
     workspaceHidden: document.querySelector("#system-view").hidden,
   }));
   check(midFlight.nav === "nav-jobs" && midFlight.workspaceHidden,
-    "delayed A->B->Jobs did not land on Jobs: " + JSON.stringify(midFlight));
-  await page.waitForTimeout(2500); // let every delayed A/B response land and be dropped
+    "A->B->Jobs did not land on Jobs: " + JSON.stringify(midFlight));
+  await page.waitForTimeout(2500); // let the delayed A and B responses land and be dropped
   const afterLanding = await page.evaluate(() => ({
     nav: document.querySelector("[aria-current=page]")?.id,
     workspaceHidden: document.querySelector("#system-view").hidden,
     jobsVisible: !document.querySelector("#dashboard").hidden,
   }));
+  check(aCtx >= 1 && bCtx >= 1, `A and B requests did not both start (A=${aCtx} B=${bCtx})`);
   check(afterLanding.nav === "nav-jobs" && afterLanding.workspaceHidden && afterLanding.jobsVisible,
     "late A/B completions repainted over Jobs: " + JSON.stringify(afterLanding));
-  await page.unroute("**/api/entities/*");
+  await page.unroute("**/api/entities/" + entity + "*");
+  await page.unroute("**/api/entities/" + cardTwo + "*");
   await page.unroute("**/api/incidents?*entity=*");
 
   // 9e. refresh recovery: with the workspace's context request HUNG, refresh
@@ -301,12 +313,17 @@ async function main() {
     .test(document.querySelector("#system-view")?.textContent || ""));
   check(!(await page.locator("#refresh").isDisabled()), "refresh stranded after hung request recovery");
 
-  // 9f. scoped load-more failure. Live entities have <25 incidents so no page
-  // boundary occurs naturally; inject a nextCursor into the first scoped page,
-  // then fail the load-more request. The error must be VISIBLE (body text) and
-  // ANNOUNCED (the polite live region actually holds the text — the ordering
-  // bug from the re-review left the region cleared by resetView).
+  // 9f. scoped load-more failure + an announcement that survives a later
+  // re-render. Live entities have <25 incidents so no page boundary occurs
+  // naturally; inject a nextCursor into the first scoped page, then fail the
+  // load-more. The context request is DELIBERATELY delayed so it settles AFTER
+  // the load-more failure — deterministically triggering the re-render that a
+  // naive render-then-announce fix would let wipe the live region.
   await resetRoute();
+  await page.route("**/api/entities/" + entity + "*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // settles after the load-more fails
+    await route.continue();
+  });
   await page.route("**/api/incidents?*entity=" + entity + "*", async (route) => {
     if (route.request().url().includes("cursor=")) return route.abort(); // load-more fails
     const resp = await route.fetch();
@@ -314,8 +331,9 @@ async function main() {
     body.nextCursor = "aW5qZWN0ZWQ"; // opaque; the abort above stops it reaching SQL
     await route.fulfill({ response: resp, body: JSON.stringify(body) });
   });
+  const ctxResponse = page.waitForResponse((r) => r.url().includes("/api/entities/" + entity), { timeout: 6000 });
   await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
-  await page.waitForSelector("[data-entity-incidents-more]");
+  await page.waitForSelector("[data-entity-incidents-more]"); // incidents fast; context still pending
   await page.locator("[data-entity-incidents-more]").click();
   await page.waitForFunction(() => {
     const region = document.querySelector("#system-view p.run-msg[role=status]");
@@ -329,20 +347,26 @@ async function main() {
       regionHidden: !region || region.hidden,
       regionText: region ? region.textContent : null,
       buttonEnabled: !!button && !button.disabled,
+      contextStillLoading: /Loading connectivity…/.test(document.querySelector("#system-view")?.textContent || ""),
     };
   });
   check(loadMore.bodyHasError, "scoped load-more failure not shown in body");
   check(!loadMore.regionHidden && /Couldn't load more incident records/.test(loadMore.regionText || ""),
     "scoped load-more failure not announced in the visible live region: " + JSON.stringify(loadMore));
   check(loadMore.buttonEnabled, "load-more button should stay enabled for retry");
-  // The announcement must survive a later re-render (e.g. a late context settle
-  // whose resetView would otherwise wipe the region).
-  await page.waitForTimeout(2000);
+  check(loadMore.contextStillLoading, "context should still be pending when the load-more fails (test setup)");
+  // Deterministically wait for the delayed context to arrive and re-render the
+  // connectivity/signals sections (resetView runs), then confirm the
+  // announcement survived that re-render.
+  await ctxResponse;
+  await page.waitForFunction(() => !/Loading connectivity…/
+    .test(document.querySelector("#system-view")?.textContent || ""));
   const persisted = await page.evaluate(() => {
     const region = document.querySelector("#system-view p.run-msg[role=status]");
     return !!region && !region.hidden && /Couldn't load more incident records/.test(region.textContent || "");
   });
-  check(persisted, "load-more announcement was wiped by a later re-render");
+  check(persisted, "load-more announcement was wiped by the later context re-render");
+  await page.unroute("**/api/entities/" + entity + "*");
   await page.unroute("**/api/incidents?*entity=" + entity + "*");
   results.loadMoreFailure = true;
 

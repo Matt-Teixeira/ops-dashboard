@@ -178,13 +178,33 @@ Applied:
    `nextCursor` into the first scoped page and failing the load-more — live
    entities have <25 incidents so no natural boundary existed, which is why the
    ordering bug slipped through.
-3. (gate) Step 9d now fires a genuine delayed A→B→Jobs (all three navigations
-   while A's 2s-delayed requests are in flight) and asserts late completions
-   never repaint Jobs.
+3. (gate) Step 9d fires a delayed A→B→Jobs. (Superseded by the third re-review
+   below — the first version of this step was a false positive.)
 4. (gate) New step 9b covers context-failure/records-success (the reciprocal of
    the records-failure/context-success case).
 5. (docs) The review handoff's stale `Promise.allSettled` description and
    `32/32` figure were corrected to the actual per-settle chains and 33/33.
+
+Post-fix: 171/171 unit tests, 33/33 API checks, browser gate fully green.
+
+## Codex third re-review fix round (2026-07-24)
+
+Third independent review: no product-code findings (the load-more live-region
+fix confirmed correct), but the 9d race gate was a false positive and two
+evidence claims outran their tests. Fixed (gates/docs only, no product code):
+
+1. (blocking) Step 9d assigned all three hashes in ONE synchronous browser
+   task, so the `hashchange` handlers could only observe the final `#jobs` and
+   the A/B requests might never start — the test proved nothing. Rewritten to
+   navigate each hash in its own task and `waitForRequest` A's then B's request
+   before the next navigation (route counters asserted at the end), so it now
+   genuinely proves both started in flight before Jobs superseded them.
+2. Step 9f's persistence check previously only slept. It now delays the context
+   request so it settles after the load-more failure, waits on that response
+   deterministically, and only then asserts the announcement survived the
+   re-render.
+3. (docs) Corrected the "genuine … all three navigations in flight" wording for
+   9d (above) and the `32 checks` figure in the review handoff's file list.
 
 Post-fix: 171/171 unit tests, 33/33 API checks, browser gate fully green.
 

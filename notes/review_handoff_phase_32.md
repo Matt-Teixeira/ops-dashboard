@@ -29,7 +29,7 @@ public/index.html        workspace view, entityHref canonicalization, non-SME li
 test/incidents.test.js   scoped SQL guards, firstSeen
 test/entities.test.js    context shaping, partial/empty/404, server handler guards
 test/routes.test.js      alias + return-token round trips
-notes/phase-32-api-validation.js      reproducible live gate (32 checks)
+notes/phase-32-api-validation.js      reproducible live gate (33 checks)
 notes/phase-32-browser-validation.js  reproducible browser gate
 markdown/PHASE_LOG.md, markdown/PROMPTS.md
 ```
@@ -145,15 +145,34 @@ stale doc claims). Applied:
    `nextCursor` into the first scoped page, fails the load-more, and asserts
    both the body message AND the visible, populated live region — this now
    catches the bug in (1).
-3. (gate) Step 9d now performs a GENUINE delayed A→B→Jobs: all three
-   navigations fire while A's 2s-delayed requests are still in flight, then the
-   test waits for the late completions to land and asserts Jobs was never
-   repainted.
+3. (gate) Step 9d now performs a delayed A→B→Jobs where each navigation is
+   issued in its own browser task and the test `waitForRequest`s each entity's
+   request before the next, then waits for the late completions to land and
+   asserts Jobs was never repainted.
 4. (gate) New step 9b covers the reciprocal partial failure: context request
    fails while incident records succeed (records render; the three context
    sections each show honest failure text).
 5. (docs) This handoff's stale `Promise.allSettled` description and `32/32`
    figure corrected; the "announces politely" claim is now backed by step 9f.
+
+## Third re-review delta (2026-07-24)
+
+Third review returned needs-fixes: no product-code findings (the load-more fix
+confirmed correct), but the 9d race gate was a false positive and two evidence
+claims outran their tests. Fixed:
+
+1. (gate, blocking) Step 9d assigned all three hashes synchronously in one
+   browser task, so the `hashchange` handlers could only ever observe the final
+   `#jobs` and A/B might never fire — a false positive. Rewritten to navigate
+   each hash in a separate task and `waitForRequest` A's and B's requests before
+   moving on (plus route counters asserted at the end), proving both started
+   before the Jobs navigation.
+2. (gate) Step 9f's persistence assertion previously only slept. It now delays
+   the context request so it settles AFTER the load-more failure, waits on that
+   response deterministically, and only then asserts the announcement survived
+   the re-render.
+3. (docs) The "genuine … all three navigations in flight" phrasing for 9d and
+   the `32 checks` file-list figure corrected here and in PHASE_LOG.
 
 Post-fix validation: 171/171 unit tests; 33/33 API checks; browser gate fully
 green including the injected-failure legs (expected-noise tolerance is scoped
