@@ -81,16 +81,47 @@ async function main() {
   // Live per-entity cardinality (max 12 on 2026-07-24) is below the minimum
   // page size, so a scoped page boundary cannot occur naturally; composition is
   // exercised by handing the scoped call a mid-list cursor from the GLOBAL walk
-  // and checking the result is exactly "this entity's rows after that cursor".
+  // and comparing the result EXACTLY against SQL evaluating the same cursor
+  // predicate scoped to the entity (not just scope/uniqueness).
   const globalFirst = await api("/api/incidents?limit=25");
   const cursor = globalFirst.body.nextCursor;
   if (cursor) {
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
     const scopedAfter = await api(`/api/incidents?entity=${top.entity}&cursor=${encodeURIComponent(cursor)}`);
     check("entity+cursor compose without error", scopedAfter.status === 200);
-    check("entity+cursor rows stay scoped and deduped",
-      scopedAfter.body.incidents.every((i) => i.entity === top.entity) &&
-      new Set(scopedAfter.body.incidents.map((i) => i.id)).size === scopedAfter.body.incidents.length);
+    const expectedAfter = (await db.any(`
+      WITH ranked AS (
+        SELECT id, last_seen,
+               CASE WHEN state IN ('open','recurring','acknowledged') THEN 0
+                    WHEN state IN ('resolved','suppressed') THEN 1 ELSE 2 END AS activity_rank,
+               CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+                             WHEN 'low' THEN 3 WHEN 'info' THEN 4 ELSE 5 END AS severity_rank
+        FROM incidents.incidents WHERE entity = $1)
+      SELECT id FROM ranked
+      WHERE activity_rank > $2
+         OR (activity_rank = $2 AND severity_rank > $3)
+         OR (activity_rank = $2 AND severity_rank = $3 AND (
+              ($4::timestamptz IS NOT NULL AND (last_seen < $4 OR last_seen IS NULL))
+              OR (last_seen IS NOT DISTINCT FROM $4::timestamptz AND id < $5::bigint)))
+      ORDER BY activity_rank, severity_rank, last_seen DESC NULLS LAST, id DESC`,
+      [top.entity, decoded.a, decoded.s, decoded.t, decoded.i])).map((r) => Number(r.id));
+    check("entity+cursor rows EXACTLY equal SQL applying the same boundary",
+      JSON.stringify(scopedAfter.body.incidents.map((i) => i.id)) === JSON.stringify(expectedAfter.slice(0, 100)),
+      { api: scopedAfter.body.incidents.length, sql: expectedAfter.length });
   } else check("entity+cursor compose without error", false, "no global cursor available");
+  // Full entity-filtered cursor walk at the minimum page size: complete,
+  // duplicate-free, and identical to the full scoped SQL id list.
+  const walked = [];
+  let scopedCursor = null, scopedPages = 0;
+  do {
+    const page = await api(`/api/incidents?entity=${top.entity}&limit=25` +
+      (scopedCursor ? `&cursor=${encodeURIComponent(scopedCursor)}` : ""));
+    walked.push(...page.body.incidents.map((i) => i.id));
+    scopedCursor = page.body.nextCursor; scopedPages += 1;
+  } while (scopedCursor && scopedPages < 10);
+  check("full entity-filtered cursor walk equals the scoped SQL order exactly",
+    JSON.stringify(walked) === JSON.stringify(sqlIds) && new Set(walked).size === walked.length,
+    { walked: walked.length, pages: scopedPages });
   const filtered = await api(`/api/incidents?entity=${top.entity}&state=resolved&severity=high`);
   const filteredSql = await db.one(`
     SELECT count(*)::int AS n FROM incidents.incidents

@@ -95,6 +95,40 @@ markdown/PHASE_LOG.md, markdown/PROMPTS.md
 - `showSystem`/`renderSystem` were removed (the alias renders the workspace);
   `/api/systems/:id` stays.
 
+## Fix-round delta (2026-07-24, after the first Codex review)
+
+The first independent review returned needs-fixes (0 blocker/high, 3 medium,
+1 low, gate gaps). All were applied in commit(s) after `3563ccd`; re-review
+the delta (`git diff 3563ccd`) plus this checklist:
+
+1. Finding 1 (sections gated on both requests; hung request pinned refresh):
+   `showEntity` now paints the shell immediately, each request updates its own
+   sections on settle, superseded requests abort via `AbortController`, and
+   refresh re-enables at reload start (re-click aborts + restarts). Verify no
+   regression in stale-completion handling (`runReq` + state identity +
+   AbortError filtering) and that 400/404 remain whole-page terminal states.
+2. Finding 2 (raw result hidden on CURRENT rows): every connectivity record
+   now renders raw last result, record freshness, derived state, exact
+   checked-at `<time>` (title carries the ISO instant), and data age.
+3. Finding 3 (signals lacked UUID/copy): signal rows reuse `appendCompactRun`
+   with the timestamp-hinted `runHref` and entity return token. A latent
+   containment quirk surfaced here: the `.sr-only` copy-status span (absolute)
+   inflated the html scroll area from inside scrolled tables; fixed with
+   `position: relative` on `.run-id-wrap` (also covers the Phase 28 app-runs
+   table). Confirm no visual regression there.
+4. Finding 4 (silent load-more failure): failed scoped pages now render a
+   visible retryable message and announce politely; the button stays enabled.
+5. Gate gaps: the API gate adds an exact after-cursor SQL comparison and a
+   full entity-filtered walk at limit=25 (now 33 checks); the browser gate
+   adds the acquisition + raw-list entry legs, deterministic route-intercepted
+   failure/delay/hang scenarios (9a–9e), asserted wrapper containment, and all
+   three widths in both schemes. PHASE_LOG's section-error and race-evidence
+   sentences were rewritten to match (they previously overclaimed).
+
+Post-fix validation: 171/171 unit tests; 33/33 API checks; browser gate fully
+green including the injected-failure legs (expected-noise tolerance is scoped
+to exactly the deliberate 404 and the injected `net::ERR_FAILED` aborts).
+
 ## Requested output
 
 1. Findings first, ordered blocker/high/medium/low, each with severity,

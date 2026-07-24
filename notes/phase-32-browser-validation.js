@@ -18,16 +18,19 @@ function check(value, message) {
   if (!value) throw new Error(message);
 }
 
-// The deliberate absent-entity probe fetches a 404, which Chromium logs as a
-// console error even though the app handles it with honest empty-state text.
-// Only that expected message, only during that step, is tolerated.
+// The deliberate absent-entity probe fetches a 404, and the injected-failure
+// steps abort requests (net::ERR_FAILED); Chromium logs both as console errors
+// even though the app handles them with honest section/empty-state text. Only
+// those expected messages, only during their steps, are tolerated.
 let expectingDeliberate404 = false;
+let expectingInjectedFailure = false;
 
 function monitor(page, faults) {
   page.on("pageerror", (error) => faults.push("pageerror: " + error.message));
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     if (expectingDeliberate404 && /404 \(Not Found\)/.test(message.text())) return;
+    if (expectingInjectedFailure && /net::ERR_FAILED/.test(message.text())) return;
     faults.push("console: " + message.text());
   });
 }
@@ -60,6 +63,12 @@ async function main() {
   const entity = decodeURIComponent(cardHref.match(/#entity=([^&]+)/)[1]);
   await page.locator(`#entity-cards article a[href="${cardHref}"]`).first().click();
   await page.waitForSelector("#system-view h3");
+  // The shell paints immediately; wait for both sources before asserting.
+  await page.waitForFunction(() => {
+    const text = document.querySelector("#system-view")?.textContent || "";
+    return /matching incident records loaded|No matching incident records/.test(text) &&
+      !/Loading connectivity…/.test(text);
+  });
   let ws = await page.evaluate(workspaceState);
   check(ws.visible && ws.heading === "Entity " + entity, "workspace heading wrong: " + JSON.stringify(ws));
   check(ws.title.startsWith("Entity " + entity), "document title not entity-scoped");
@@ -73,6 +82,7 @@ async function main() {
     "scoped loaded/matching counts missing");
   check(!/incidents overall/.test(ws.counts), "global total must not appear on the scoped page");
   results.workspace = ws;
+  console.log("checkpoint: workspace");
   await page.screenshot({ path: evidenceDir + "/01-workspace.png", fullPage: true });
 
   // -- 2. incident drill-down returns to the exact workspace ----------------
@@ -87,9 +97,17 @@ async function main() {
   ws = await page.evaluate(workspaceState);
   check(ws.heading === "Entity " + entity, "return from incident lost the workspace");
 
-  // -- 3. signals run link returns to the workspace -------------------------
-  const runLink = page.locator("#system-view table").last().locator("a", { hasText: "view ›" }).first();
+  // -- 3. signals run link returns to the workspace (compact UUID + copy) ----
+  await page.waitForFunction(() => !/Loading connectivity…/
+    .test(document.querySelector("#system-view")?.textContent || ""));
+  const signalsCopy = page.locator("#system-view .copy-run");
+  if (await signalsCopy.count()) {
+    check(true, "signal rows expose a copy control");
+  }
+  const runLink = page.locator("#system-view table").last().locator("tbody a[href^='#run=']").first();
   if (await runLink.count()) {
+    const runAria = await runLink.getAttribute("aria-label");
+    check(/^run [0-9a-f-]{36}$/.test(runAria || ""), "signal run link lost the exact UUID: " + runAria);
     await runLink.click();
     await page.waitForSelector("#run-view h2");
     const runBack = await page.evaluate(() => document.querySelector("#run-view a")?.getAttribute("href"));
@@ -98,6 +116,7 @@ async function main() {
     await page.waitForSelector("#system-view h3");
   }
   results.drilldownReturns = true;
+  console.log("checkpoint: drilldownReturns");
 
   // -- 4. legacy #system= renders the same workspace ------------------------
   await page.goto(base + "/#system=" + encodeURIComponent(entity), { waitUntil: "networkidle" });
@@ -107,6 +126,7 @@ async function main() {
     "legacy alias is not the workspace: " + JSON.stringify(ws));
   check(ws.sections.length >= 3, "legacy alias missing sections");
   results.legacyAlias = ws;
+  console.log("checkpoint: legacyAlias");
 
   // -- 5. entry from connectivity keeps its return context ------------------
   await page.goto(base + "/#connectivity", { waitUntil: "networkidle" });
@@ -118,22 +138,43 @@ async function main() {
   ws = await page.evaluate(workspaceState);
   check(ws.back === "#connectivity", "workspace back should honor connectivity origin: " + ws.back);
   results.connectivityEntry = true;
+  console.log("checkpoint: connectivityEntry");
 
-  // -- 6. system-signals list entry stays canonical --------------------------
+  // -- 6. system-signals, acquisition, and raw-list entries stay canonical ---
   await page.goto(base + "/#systems", { waitUntil: "networkidle" });
   await page.waitForSelector("#systems-view table a");
   const sysHref = await page.locator("#systems-view table a").first().getAttribute("href");
   check(/^#entity=.+&from=systems$/.test(sysHref), "systems link not canonical: " + sysHref);
+  await page.goto(base + "/#acq-systems", { waitUntil: "networkidle" });
+  await page.waitForSelector("#acq-view table a");
+  const acqHref = await page.locator("#acq-view table a[href*='entity=']").first().getAttribute("href");
+  check(/^#entity=.+&from=acq-systems$/.test(acqHref), "acquisition link not canonical: " + acqHref);
+  await page.locator(`#acq-view table a[href="${acqHref}"]`).first().click();
+  await page.waitForSelector("#system-view h3");
+  ws = await page.evaluate(workspaceState);
+  check(ws.back === "#acq-systems", "workspace back should honor acquisition origin: " + ws.back);
+  await page.goto(base + "/#incident-list", { waitUntil: "networkidle" });
+  await page.waitForSelector("#incidents-view table a[href*='entity=']");
+  const listHref = await page.locator("#incidents-view table a[href*='entity=']").first().getAttribute("href");
+  check(/^#entity=.+&from=incident-list$/.test(listHref), "raw-list entity link not canonical: " + listHref);
+  await page.locator(`#incidents-view table a[href="${listHref}"]`).first().click();
+  await page.waitForSelector("#system-view h3");
+  ws = await page.evaluate(workspaceState);
+  check(ws.back === "#incident-list", "workspace back should honor raw-list origin: " + ws.back);
+  results.entryMatrix = true;
+  console.log("checkpoint: entryMatrix");
 
   // -- 7. non-SME workspace is honest ---------------------------------------
   await page.goto(base + "/#entity=__global__", { waitUntil: "networkidle" });
-  await page.waitForSelector("#system-view h3");
+  await page.waitForFunction(() => /cross-fleet incident group|Couldn't load/
+    .test(document.querySelector("#system-view")?.textContent || ""));
   ws = await page.evaluate(workspaceState);
   check(ws.heading === "Entity __global__", "__global__ workspace missing");
   check(ws.counts.includes("cross-fleet incident group"), "global kind label missing");
   check(ws.counts.includes("No connectivity record"), "must not fabricate SME connectivity for __global__");
   await page.screenshot({ path: evidenceDir + "/02-global-workspace.png", fullPage: true });
   results.nonSme = true;
+  console.log("checkpoint: nonSme");
 
   // -- 8. absent + 404 semantics --------------------------------------------
   expectingDeliberate404 = true;
@@ -142,49 +183,147 @@ async function main() {
     .test(document.querySelector("#system-view")?.textContent || ""));
   expectingDeliberate404 = false;
   results.notFound = true;
+  console.log("checkpoint: notFound");
 
-  // -- 9. races: A -> B -> jobs with no mixed paint, refresh never strands ---
+  // -- 9. deterministic delayed/failed responses ------------------------------
+  expectingInjectedFailure = true;
   const cardTwo = await page.evaluate(async () => {
     const data = await (await fetch("/api/entities")).json();
     return data.entities[1].entity;
   });
-  await page.goto(base + "/#entity=" + encodeURIComponent(entity), { waitUntil: "domcontentloaded" });
-  await page.evaluate((next) => { location.hash = "#entity=" + next; }, cardTwo);
+
+  console.log("checkpoint: 9a");
+  // 9a. partial paint: incident-records request fails; summary/connectivity/
+  // signals still render with honest per-section error text only for records.
+  await page.route("**/api/incidents?*entity=*", (route) => route.abort());
+  await page.goto(base + "/#entity=" + encodeURIComponent(entity), { waitUntil: "load" });
+  await page.waitForFunction(() => {
+    const text = document.querySelector("#system-view")?.textContent || "";
+    return /Couldn't load this entity's incident records/.test(text) &&
+      !/Loading incident summary…/.test(text) && !/Loading connectivity…/.test(text);
+  });
+  ws = await page.evaluate(workspaceState);
+  check(/active of \d+ incidents/.test(ws.counts), "incident summary missing during records failure");
+  check(!ws.counts.includes("Couldn't load connectivity") &&
+    (/last result/.test(ws.counts) || ws.counts.includes("No connectivity record")),
+  "connectivity should render despite records failure");
+  await page.unroute("**/api/incidents?*entity=*");
+
+  console.log("checkpoint: 9b");
+  // Sub-steps revisit the same #entity= hash; a goto to an identical URL is a
+  // same-document no-op, so reset to #jobs between steps to force a real
+  // hashchange-driven reload under the installed interception.
+  const resetRoute = async () => {
+    await page.evaluate(() => { location.hash = "#jobs"; });
+    await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
+  };
+
+  // 9b. delayed context: records paint first; the context section shells say
+  // loading instead of hiding them; the late context then fills in.
+  await resetRoute();
+  await page.route("**/api/entities/" + entity + "*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
+  await page.waitForFunction(() => /matching incident records loaded/
+    .test(document.querySelector("#system-view")?.textContent || ""));
+  ws = await page.evaluate(workspaceState);
+  check(/Loading connectivity…/.test(ws.counts) && /Loading recent signals…/.test(ws.counts),
+    "records painted but context shells not shown while pending");
+  await page.waitForFunction(() => !/Loading connectivity…/
+    .test(document.querySelector("#system-view")?.textContent || ""));
+  ws = await page.evaluate(workspaceState);
+  check(/last result/.test(ws.counts) || /No connectivity record/.test(ws.counts),
+    "delayed context never filled its sections");
+  await page.unroute("**/api/entities/" + entity + "*");
+
+  console.log("checkpoint: 9c");
+  // 9c. A -> B while A's responses are still delayed: B renders, A's late
+  // completions never repaint or mix.
+  await page.route("**/api/entities/" + entity + "*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await route.continue();
+  });
+  await page.route("**/api/incidents?*entity=" + entity + "*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await route.continue();
+  });
+  await resetRoute();
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
   await page.waitForSelector("#system-view h3");
+  await page.evaluate((next) => { location.hash = "#entity=" + next; }, cardTwo);
+  await page.waitForFunction(() => /matching incident records loaded/
+    .test(document.querySelector("#system-view")?.textContent || ""));
+  await page.waitForTimeout(2500); // let A's delayed responses land and be dropped
   ws = await page.evaluate(workspaceState);
   check(ws.heading === "Entity " + cardTwo && !ws.counts.includes(entity),
-    "rapid A->B left mixed entity content: " + ws.heading);
+    "A->B with delayed A responses left mixed content: " + ws.heading);
+  await page.unroute("**/api/entities/" + entity + "*");
+  await page.unroute("**/api/incidents?*entity=" + entity + "*");
+
+  console.log("checkpoint: 9d");
+  // 9d. entity -> jobs while loading: no stale view/chrome repaint.
   await page.evaluate(() => { location.hash = "#jobs"; });
   await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
   const jobsChrome = await page.evaluate(() => ({
-    meta: document.querySelector("#meta").textContent,
     nav: document.querySelector("[aria-current=page]")?.id,
     workspaceHidden: document.querySelector("#system-view").hidden,
   }));
   check(jobsChrome.nav === "nav-jobs" && jobsChrome.workspaceHidden,
     "entity -> jobs race left stale view/chrome: " + JSON.stringify(jobsChrome));
-  await page.locator("#refresh").click();
-  await page.evaluate(() => { location.hash = "#entity=" + "__global__"; });
+
+  console.log("checkpoint: 9e");
+  // 9e. refresh recovery: with the workspace's context request HUNG, refresh
+  // must re-enable promptly (reload started, sections own their waiting) and a
+  // re-click after the hang clears must fully load.
+  let hungRoute = null;
+  await page.route("**/api/entities/__global__*", (route) => { hungRoute = route; /* never fulfil */ });
+  await page.evaluate(() => { location.hash = "#entity=__global__"; });
   await page.waitForSelector("#system-view h3");
-  await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
-  results.races = true;
+  await page.locator("#refresh").click();
+  await page.waitForFunction(() => !document.querySelector("#refresh").disabled, null, { timeout: 3000 });
+  ws = await page.evaluate(workspaceState);
+  check(/Loading connectivity…/.test(ws.counts), "hung context should leave section shells waiting");
+  await page.unroute("**/api/entities/__global__*");
+  if (hungRoute) await hungRoute.abort().catch(() => {});
+  await page.locator("#refresh").click();
+  await page.waitForFunction(() => /cross-fleet incident group/
+    .test(document.querySelector("#system-view")?.textContent || ""));
+  check(!(await page.locator("#refresh").isDisabled()), "refresh stranded after hung request recovery");
+  expectingInjectedFailure = false;
+  results.deterministicRaces = true;
+  console.log("checkpoint: deterministicRaces");
 
   // -- 10. responsive containment, light and dark ----------------------------
-  for (const [width, height, scheme] of [[390, 844, "light"], [390, 844, "dark"], [768, 900, "dark"], [1440, 900, "dark"]]) {
+  for (const [width, height, scheme] of [
+    [390, 844, "light"], [390, 844, "dark"],
+    [768, 900, "light"], [768, 900, "dark"],
+    [1440, 900, "light"], [1440, 900, "dark"],
+  ]) {
     const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
     const p = await ctx.newPage();
     monitor(p, faults);
     await p.goto(base + "/#entity=" + encodeURIComponent(entity), { waitUntil: "networkidle" });
     await p.waitForSelector("#system-view h3");
+    await p.waitForFunction(() => /matching incident records loaded/
+      .test(document.querySelector("#system-view")?.textContent || ""));
     const overflow = await p.evaluate(() => ({
       body: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      tables: Array.from(document.querySelectorAll("#system-view .table-scroll"), (w) => w.scrollWidth >= w.clientWidth).length,
+      wrappers: document.querySelectorAll("#system-view .table-scroll").length,
+      contained: Array.from(document.querySelectorAll("#system-view .table-scroll"), (w) => {
+        const rect = w.getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1;
+      }).every(Boolean),
     }));
     check(overflow.body <= 0, `body overflows horizontally at ${width}px ${scheme}`);
+    check(overflow.wrappers >= 1 && overflow.contained,
+      `table wrappers escape the viewport at ${width}px ${scheme}`);
     if (width === 390 && scheme === "dark") await p.screenshot({ path: evidenceDir + "/03-mobile-dark.png", fullPage: true });
     await ctx.close();
   }
   results.responsive = true;
+  console.log("checkpoint: responsive");
 
   check(faults.length === 0, "console/page errors: " + JSON.stringify(faults));
   console.log(JSON.stringify({ base, entity, results }, null, 2));

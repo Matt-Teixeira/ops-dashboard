@@ -64,7 +64,10 @@
     .controls label { display: inline-flex; align-items: center; gap: .3rem; }
     .table-scroll { width: 100%; max-width: 100%; max-height: min(70vh, 48rem); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
     .table-scroll:focus-visible { outline: 3px solid #1565c0; outline-offset: 2px; }
-    .run-id-wrap { display: inline-flex; align-items: center; gap: .35rem; }
+    /* position: relative contains the absolutely-positioned .sr-only copy
+       status; without it the hidden span's static position inside a scrolled
+       table inflates the html scroll area past the viewport. */
+    .run-id-wrap { display: inline-flex; align-items: center; gap: .35rem; position: relative; }
     .copy-run { padding: .05rem .3rem; font-size: .72rem; }
     .copy-fallback { width: 12ch; font: .76rem ui-monospace, monospace; }
     .app-chrome { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .45rem; }
@@ -2008,6 +2011,9 @@
         `· ${st.incidents.length} of ${st.scopedTotal == null ? "?" : st.scopedTotal} matching incident records loaded` +
         (st.nextCursor ? "" : " · end of matching records"));
       view.appendChild(counts);
+      // A failed page is announced and visibly retryable, never silent (Codex
+      // Phase 32 finding 4): the button stays enabled for another attempt.
+      if (st.pageError) view.appendChild(wsMuted("Couldn't load more incident records — try again."));
       if (st.nextCursor) {
         const more = document.createElement("button"); more.type = "button";
         more.dataset.entityIncidentsMore = "true";
@@ -2018,8 +2024,11 @@
       }
     }
 
-    function wsConnectivity(view, rows) {
-      view.appendChild(wsHeading("Current connectivity"));
+    // Raw and derived truth stay distinct facts on every record (Codex Phase 32
+    // finding 2): last result (what the producer reported), freshness, derived
+    // current state, and the exact checked-at instant with its age — a CURRENT
+    // row shows its raw result just like a STALE one does.
+    function wsConnectivityRows(view, rows) {
       if (!rows.length) return view.appendChild(wsMuted("No connectivity record for this entity."));
       for (const c of rows) {
         const line = document.createElement("p");
@@ -2030,21 +2039,26 @@
         badge.textContent = current;
         line.appendChild(document.createTextNode(c.source + ": "));
         line.appendChild(badge);
-        const bits = [];
-        if (current === "STALE") bits.push(`last result ${c.lastResult || "UNKNOWN"} — record too old to be current`);
-        if (c.errorCategory) bits.push(c.errorCategory);
-        if (c.checkedAgeMs != null) bits.push(`checked ${TimeView.age(c.checkedAgeMs)} ago`);
-        if (c.captureAgeMs != null) bits.push(`data ${TimeView.age(c.captureAgeMs)} old`);
         const tail = document.createElement("span");
         tail.className = "muted";
-        tail.textContent = bits.length ? " · " + bits.join(" · ") : "";
+        tail.appendChild(document.createTextNode(
+          ` · last result ${c.lastResult || "UNKNOWN"}` +
+          ` · record ${c.freshness || "STALE"}` +
+          (current === "STALE" ? " — too old to be current" : "") +
+          (c.errorCategory ? ` · ${c.errorCategory}` : "") + " · checked "));
+        const checked = TimeView.instant(c.insertedAt);
+        const t = document.createElement("time");
+        t.textContent = checked.relative;
+        t.title = checked.title;
+        if (checked.iso) t.dateTime = checked.iso;
+        tail.appendChild(t);
+        if (c.captureAgeMs != null) tail.appendChild(document.createTextNode(` · data ${TimeView.age(c.captureAgeMs)} old`));
         line.appendChild(tail);
         view.appendChild(line);
       }
     }
 
     function wsSignals(view, st) {
-      view.appendChild(wsHeading(`Recent run-log signals (last ${st.context.signalWindowHours}h)`));
       view.appendChild(wsMuted("Warn/error events mentioning this entity across app runs — recent activity, not incident history or current status."));
       const signals = st.context.signals;
       if (!signals.length) return view.appendChild(wsMuted("No warnings or errors mentioning this entity in the window."));
@@ -2069,10 +2083,11 @@
         tr.appendChild(cell(b.count, "num"));
         const runTd = document.createElement("td");
         if (b.lastRunId) {
+          // Exact UUID with copy behavior (house Phase 28 contract), retaining
+          // the timestamp-hinted drill-down href and the entity return token.
           const a = document.createElement("a");
           a.href = runHref(b.lastRunId, b.lastInsertedAt, "entity:" + st.entity);
-          a.textContent = "view ›";
-          runTd.appendChild(a);
+          appendCompactRun(runTd, a, b.lastRunId);
         } else { runTd.textContent = "—"; }
         tr.appendChild(runTd);
         frag.appendChild(tr);
@@ -2097,80 +2112,118 @@
       const asOf = st.context ? st.context.asOf : st.incidentsAsOf;
       view.appendChild(wsMuted(
         (kindLabel ? `· ${kindLabel} ` : "") +
-        `· as of ${fmtTime(asOf)} · incidents from incident-engine · connectivity from alert.* · signals from util.app_run_logs`));
+        (asOf ? `· as of ${fmtTime(asOf)} ` : "") +
+        "· incidents from incident-engine · connectivity from alert.* · signals from util.app_run_logs"));
 
-      // Incidents first: the inventory that motivated the visit.
+      // Incidents first: the inventory that motivated the visit. Each half of
+      // the section (summary vs records) settles and errors independently.
       view.appendChild(wsHeading("Incidents"));
-      if (st.context && st.context.incidentSummary) wsIncidentSummary(view, st.context.incidentSummary);
+      if (st.contextLoading) view.appendChild(wsMuted("Loading incident summary…"));
+      else if (st.context && st.context.incidentSummary) wsIncidentSummary(view, st.context.incidentSummary);
       else if (st.context) view.appendChild(wsMuted("No incident records for this entity."));
-      else if (st.contextError) view.appendChild(wsMuted("Couldn't load the incident summary, connectivity, and signal context. Incident records below are unaffected."));
-      if (st.incidentsError) view.appendChild(wsMuted("Couldn't load this entity's incident records."));
+      else view.appendChild(wsMuted("Couldn't load the incident summary. Incident records below are unaffected."));
+      if (st.incidentsLoading) view.appendChild(wsMuted("Loading incident records…"));
+      else if (st.incidentsError) view.appendChild(wsMuted("Couldn't load this entity's incident records."));
       else if (st.incidents.length) wsIncidentTable(view, st);
       else view.appendChild(wsMuted("No matching incident records."));
 
-      // Connectivity and signals only render from a loaded context; the combined
-      // endpoint's failure was already reported honestly above.
-      if (st.context) {
-        wsConnectivity(view, st.context.connectivity);
-        wsSignals(view, st);
-      }
+      // Connectivity and signals come from the combined context endpoint; while
+      // it loads (or after it fails) each section says so honestly instead of
+      // hiding behind the other request (Codex Phase 32 finding 1).
+      view.appendChild(wsHeading("Current connectivity"));
+      if (st.contextLoading) view.appendChild(wsMuted("Loading connectivity…"));
+      else if (st.context) wsConnectivityRows(view, st.context.connectivity);
+      else view.appendChild(wsMuted("Couldn't load connectivity."));
+      view.appendChild(wsHeading("Recent run-log signals" +
+        (st.context ? ` (last ${st.context.signalWindowHours}h)` : "")));
+      if (st.contextLoading) view.appendChild(wsMuted("Loading recent signals…"));
+      else if (st.context) wsSignals(view, st);
+      else view.appendChild(wsMuted("Couldn't load recent signals."));
 
       if (focusMore) requestAnimationFrame(() =>
         (view.querySelector("[data-entity-incidents-more]") || view.querySelector(".table-scroll"))?.focus());
     }
 
-    async function showEntity(entityId) {
+    // Renders the workspace shell immediately and lets each request update its
+    // own sections as it settles; a hung or failed source can never hide the
+    // other's already-available data, and superseded requests are aborted.
+    // Deliberately not awaited by callers: the global refresh button re-enables
+    // as soon as the reload has started, so a hung request cannot strand it —
+    // re-clicking refresh aborts and restarts both reads.
+    function showEntity(entityId) {
       const myReq = ++runReq;
+      if (entityWs && entityWs.abort) entityWs.abort.abort();
       hideAllViews();
       const view = document.getElementById("system-view");
       view.hidden = false;
       window.scrollTo(0, 0);
-      connMessage(view, "Loading entity workspace…");
       const st = {
-        entity: entityId, req: myReq, context: null, contextError: false,
-        incidents: [], incidentsError: false, incidentsAsOf: null,
-        nextCursor: null, scopedTotal: null, loading: false,
+        entity: entityId, req: myReq, abort: new AbortController(), terminal: false,
+        context: null, contextLoading: true,
+        incidents: [], incidentsLoading: true, incidentsError: false, incidentsAsOf: null,
+        nextCursor: null, scopedTotal: null, loading: false, pageError: false,
       };
       entityWs = st;
-      // Both reads run in parallel; a refresh therefore replaces context and the
-      // first incident page together (atomic from the operator's view), and one
-      // source failing still leaves the other rendered with honest error text.
-      const [ctx, inc] = await Promise.allSettled([
-        fetch("/api/entities/" + encodeURIComponent(entityId)).then(async (res) => ({ res, body: res.ok ? await res.json() : null })),
-        fetch(entityIncidentsUrl(entityId, null)).then(async (res) => ({ res, body: res.ok ? await res.json() : null })),
-      ]);
-      if (myReq !== runReq) return;
-      if (ctx.status === "fulfilled" && ctx.value.res.status === 400) return connMessage(view, "Invalid entity id.");
-      if (ctx.status === "fulfilled" && ctx.value.res.status === 404) {
-        return connMessage(view, "No incident, connectivity, or recent signal data for this entity.");
-      }
-      if (ctx.status === "fulfilled" && ctx.value.body) st.context = ctx.value.body;
-      else st.contextError = true;
-      if (inc.status === "fulfilled" && inc.value.body) {
-        const data = inc.value.body;
-        st.incidents = Array.isArray(data.incidents) ? data.incidents : [];
-        st.nextCursor = data.nextCursor;
-        st.scopedTotal = data.scopedTotal == null ? null : data.scopedTotal;
-        st.incidentsAsOf = data.asOf;
-      } else st.incidentsError = true;
-      if (st.contextError && st.incidentsError) return connMessage(view, "Couldn't load this entity.");
       renderEntityWorkspace(view, st);
+      const live = () => myReq === runReq && entityWs === st && !st.terminal;
+
+      fetch("/api/entities/" + encodeURIComponent(entityId), { signal: st.abort.signal })
+        .then(async (res) => ({ res, body: res.ok ? await res.json() : null }))
+        .then(({ res, body }) => {
+          if (!live()) return;
+          st.contextLoading = false;
+          // 400/404 are whole-page truths (invalid id / empty everywhere), not
+          // section states; every other failure degrades only its sections.
+          if (res.status === 400) { st.terminal = true; return connMessage(view, "Invalid entity id."); }
+          if (res.status === 404) { st.terminal = true; return connMessage(view, "No incident, connectivity, or recent signal data for this entity."); }
+          if (body) st.context = body;
+          renderEntityWorkspace(view, st);
+        })
+        .catch((err) => {
+          if (!live() || (err && err.name === "AbortError")) return;
+          st.contextLoading = false;
+          renderEntityWorkspace(view, st);
+        });
+
+      fetch(entityIncidentsUrl(entityId, null), { signal: st.abort.signal })
+        .then(async (res) => ({ ok: res.ok, body: res.ok ? await res.json() : null }))
+        .then(({ ok, body }) => {
+          if (!live()) return;
+          st.incidentsLoading = false;
+          if (ok && body) {
+            st.incidents = Array.isArray(body.incidents) ? body.incidents : [];
+            st.nextCursor = body.nextCursor;
+            st.scopedTotal = body.scopedTotal == null ? null : body.scopedTotal;
+            st.incidentsAsOf = body.asOf;
+          } else st.incidentsError = true;
+          renderEntityWorkspace(view, st);
+        })
+        .catch((err) => {
+          if (!live() || (err && err.name === "AbortError")) return;
+          st.incidentsLoading = false;
+          st.incidentsError = true;
+          renderEntityWorkspace(view, st);
+        });
     }
 
     async function loadMoreEntityIncidents() {
       const st = entityWs;
       if (!st || st.loading || !st.nextCursor || st.req !== runReq) return;
       const view = document.getElementById("system-view");
-      st.loading = true;
+      st.loading = true; st.pageError = false;
       renderEntityWorkspace(view, st);
       let data = null;
       try {
-        const res = await fetch(entityIncidentsUrl(st.entity, st.nextCursor));
+        const res = await fetch(entityIncidentsUrl(st.entity, st.nextCursor), { signal: st.abort.signal });
         if (res.ok) data = await res.json();
       } catch { /* handled below */ }
       if (st.req !== runReq) return;
       st.loading = false;
-      if (!data) return renderEntityWorkspace(view, st, true);
+      if (!data) {
+        st.pageError = true;
+        announce(routeStatus(view), "Couldn't load more incident records — try again.");
+        return renderEntityWorkspace(view, st, true);
+      }
       const seen = new Set(st.incidents.map((i) => i.id));
       for (const incident of (Array.isArray(data.incidents) ? data.incidents : [])) {
         if (!seen.has(incident.id)) { seen.add(incident.id); st.incidents.push(incident); }

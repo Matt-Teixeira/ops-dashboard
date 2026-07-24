@@ -56,8 +56,10 @@ list that cannot scope by entity.
   all three sources are empty; incident RECORDS stay on the paged list contract.
 - **Entity workspace page.** `#entity=<id>` is now a dedicated semantic page
   (incidents first — summary + category provenance + active-first paged rows;
-  current connectivity second with stale-vs-current truth; recent run-log
-  signals third, labeled as recent activity, not status or causality). Each
+  current connectivity second, every record showing raw last result, record
+  freshness, derived current state, and the exact checked-at `<time>` with its
+  age as distinct facts; recent run-log signals third, labeled as recent
+  activity, not status or causality, with exact run UUID + copy control). Each
   section owns its loading/empty/error text; a combined-context failure renders
   honestly without erasing incident records, and vice versa. `#system=<id>` is
   a permanent legacy alias rendering the same workspace (same label, Entities
@@ -70,10 +72,13 @@ list that cannot scope by entity.
   group to its scoped workspace. `entity:<id>` return tokens flow through
   incident and run detail; all inbound `#system=` bookmarks and `system:<id>`
   tokens keep working. `/api/systems/:id` and `#systems` remain unchanged.
-- **Race safety.** `showEntity` guards with the monotonic `runReq` token; both
-  workspace reads run in parallel so refresh replaces context + first incident
-  page together; scoped load-more dedupes by id and drops stale completions
-  (`st.req !== runReq`).
+- **Race safety.** `showEntity` paints the section shell immediately and lets
+  each request update its own sections as it settles (guarded by the monotonic
+  `runReq` token + per-state identity); superseded requests are aborted via
+  `AbortController`; refresh re-enables as soon as a reload has started, so a
+  hung source can never strand the button — re-clicking aborts and restarts
+  both reads. Scoped load-more dedupes by id, drops stale completions, and
+  announces a visible, retryable error on a failed page.
 
 ## Schema Facts Confirmed (live DB, 2026-07-24, as `ops_dashboard_ro`)
 
@@ -94,8 +99,10 @@ list that cannot scope by entity.
   guards, lean-row `firstSeen`, context shaping incl. partial/empty/404 rule
   and non-SME kinds, route alias semantics, server handler guards).
 - Live gate (`notes/phase-32-api-validation.js`, disposable app on 18080):
-  **32/32 checks** — scopedTotal equals direct SQL; scoped page order equals
-  the Phase 24 SQL order exactly; entity+cursor and entity+facet-filter
+  **33/33 checks** — scopedTotal equals direct SQL; scoped page order equals
+  the Phase 24 SQL order exactly; entity+cursor rows compared EXACTLY against
+  SQL evaluating the same boundary tuple, plus a full entity-filtered cursor
+  walk at limit=25 identical to the scoped SQL id list; entity+facet-filter
   composition; global response has no new keys and its full cursor walk stayed
   540/540 duplicate-free; six malformed entity inputs → 400; Phase 29 tampered
   cursor probes re-run WITH the entity filter → 400; context reconciles
@@ -103,13 +110,19 @@ list that cannot scope by entity.
   `/api/systems/:id`; window clamp 1..48/default 24; partial-source and
   non-SME workspaces 200; absent id 404; invalid id 400.
 - Browser gate (`notes/phase-32-browser-validation.js`, Playwright): card →
-  workspace → incident detail → exact return; signals run link → return;
-  legacy `#system=` renders the identical workspace; connectivity/systems
-  entries carry accurate return tokens; `__global__` honest; deliberate-404
-  empty state; SME A → SME B → Jobs races leave no mixed content/chrome and
-  never strand the refresh button; 390/768/1440 light+dark with zero body
-  overflow; zero unexpected console/page errors. Representative check landed on
-  SME16380 — the exact Phase 31 friction journey — now one page.
+  workspace → incident detail → exact return; signal run rows expose the exact
+  UUID + copy control and return to the workspace; legacy `#system=` renders
+  the identical workspace; connectivity, system-signals, acquisition, and
+  raw-incident-list entries all carry accurate return tokens; `__global__`
+  honest; deliberate-404 empty state; DETERMINISTIC injected failures/delays
+  via route interception — a failed records request leaves summary/
+  connectivity/signals rendered, a delayed context leaves records rendered
+  with per-section loading shells that later fill in, SME A → SME B with A's
+  responses delayed 2s repaints nothing after the late completions land, and a
+  HUNG context request leaves refresh re-enabled and recoverable; 390/768/1440
+  in BOTH schemes with zero body overflow and every table wrapper contained in
+  the viewport; zero unexpected console/page errors. Representative check
+  landed on SME16380 — the exact Phase 31 friction journey — now one page.
 
 ## Decisions
 
@@ -123,6 +136,27 @@ list that cannot scope by entity.
   preserved per the prompt's non-goals and doubles as reconciliation evidence.
 - The scoped page intentionally omits the global rollup total; it shows
   "N of M matching incident records loaded" only.
+
+## Codex review fix round (2026-07-24)
+
+Independent review verdict: needs fixes — no blocker/high, 3 medium, 1 low,
+plus validation-gate gaps. All applied in the same phase:
+
+1. (medium) Sections were gated on `Promise.allSettled` of both requests and a
+   hung request pinned the disabled refresh button → shell-first rendering,
+   per-settle section updates, `AbortController` on supersede, refresh
+   re-enables at reload start (see Race safety above).
+2. (medium) CURRENT connectivity rows hid the raw last result → every record
+   now shows raw result, freshness, derived state, and exact checked instant.
+3. (medium) Signal drill-down rendered only "view ›" → `appendCompactRun`
+   (exact UUID in link/title/aria + copy control), timestamp-hinted href kept.
+4. (low) Silent scoped load-more failure → visible retryable message + polite
+   announcement.
+5. (gates) Exact after-cursor SQL comparison + full entity-filtered walk in the
+   API gate; deterministic delayed/failed-response injection, the full entry
+   matrix (acquisition + raw list), asserted table containment, and both color
+   schemes at all three widths in the browser gate; this log's section-error
+   and race-evidence sentences rewritten to match the now-true behavior.
 
 ## Review Checklist Outcome
 
