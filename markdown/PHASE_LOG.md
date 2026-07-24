@@ -21,7 +21,7 @@ Git Commit: Pending
 Review Artifacts:
 
 - Review handoff: `notes/review_handoff_phase_32.md`
-- Reproducible live gate: `notes/phase-32-api-validation.js` (32/32 checks)
+- Reproducible live gate: `notes/phase-32-api-validation.js` (33/33 checks)
 - Reproducible browser gate: `notes/phase-32-browser-validation.js`
 - Responsive captures: `/tmp/ops-dashboard-phase32-evidence/*.png`
 
@@ -157,6 +157,36 @@ plus validation-gate gaps. All applied in the same phase:
    matrix (acquisition + raw list), asserted table containment, and both color
    schemes at all three widths in the browser gate; this log's section-error
    and race-evidence sentences rewritten to match the now-true behavior.
+
+## Codex re-review fix round (2026-07-24)
+
+Second independent review verdict: needs fixes — 0 blocker/high/medium (the
+three prior mediums confirmed closed), 1 low, plus gate/documentation gaps.
+Applied:
+
+1. (low) The failed-load-more `announce` ran before `renderEntityWorkspace`,
+   whose `resetView` cleared and re-hid the live region before the rAF text
+   write fired — so the "polite announcement" claim was untrue. Building the
+   gate step surfaced a deeper case Codex's suggested render-then-announce fix
+   would still miss: a LATE context-request settle re-renders and wipes the
+   announcement. Fixed properly by moving the announce inside
+   `renderEntityWorkspace` guarded by `st.pageError`, so every render (including
+   a late settle) re-announces; step 9f asserts both the initial announcement
+   and its persistence across a subsequent re-render. (This is the one behavior
+   the previous entry overclaimed.)
+2. (gate) Scoped load-more failure is now exercised (step 9f) by injecting a
+   `nextCursor` into the first scoped page and failing the load-more — live
+   entities have <25 incidents so no natural boundary existed, which is why the
+   ordering bug slipped through.
+3. (gate) Step 9d now fires a genuine delayed A→B→Jobs (all three navigations
+   while A's 2s-delayed requests are in flight) and asserts late completions
+   never repaint Jobs.
+4. (gate) New step 9b covers context-failure/records-success (the reciprocal of
+   the records-failure/context-success case).
+5. (docs) The review handoff's stale `Promise.allSettled` description and
+   `32/32` figure were corrected to the actual per-settle chains and 33/33.
+
+Post-fix: 171/171 unit tests, 33/33 API checks, browser gate fully green.
 
 ## Review Checklist Outcome
 

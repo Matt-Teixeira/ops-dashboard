@@ -2140,6 +2140,13 @@
       else if (st.context) wsSignals(view, st);
       else view.appendChild(wsMuted("Couldn't load recent signals."));
 
+      // A failed load-more announces from inside render, not from the caller:
+      // resetView clears the live region on every render, so a late
+      // context/incidents settle that re-renders would otherwise wipe an
+      // announcement made by the caller. Re-announcing here keeps the polite
+      // status truthful across re-renders (Codex Phase 32 re-review).
+      if (st.pageError) announce(routeStatus(view), "Couldn't load more incident records — try again.");
+
       if (focusMore) requestAnimationFrame(() =>
         (view.querySelector("[data-entity-incidents-more]") || view.querySelector(".table-scroll"))?.focus());
     }
@@ -2220,9 +2227,11 @@
       if (st.req !== runReq) return;
       st.loading = false;
       if (!data) {
+        // renderEntityWorkspace owns the announcement (guarded by st.pageError)
+        // so it survives any later re-render; see the note there.
         st.pageError = true;
-        announce(routeStatus(view), "Couldn't load more incident records — try again.");
-        return renderEntityWorkspace(view, st, true);
+        renderEntityWorkspace(view, st, true);
+        return;
       }
       const seen = new Set(st.incidents.map((i) => i.id));
       for (const incident of (Array.isArray(data.incidents) ? data.incidents : [])) {

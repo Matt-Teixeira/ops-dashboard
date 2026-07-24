@@ -65,9 +65,11 @@ markdown/PHASE_LOG.md, markdown/PROMPTS.md
   mirror (db/queries.js) — confirm the count query's WHERE matches the list's
   exactly.
 - `showEntity`/`loadMoreEntityIncidents`/`renderEntityWorkspace` in
-  public/index.html — the one new stateful controller. Race guards are
-  `runReq` + `st.req`; the two initial reads use `Promise.allSettled` with
-  per-section error text.
+  public/index.html — the one new stateful controller. `showEntity` paints the
+  shell then fires the two reads as independent `fetch(...).then()` chains that
+  each update their own sections on settle (guarded by `runReq` + per-state
+  identity, superseded requests aborted via `AbortController`); each section
+  owns its loading/empty/error text.
 - 404 semantics: `entityContextIsEmpty` (all three sources empty). A valid id
   with only historical connectivity must still 200.
 - Live max is 12 incidents/entity, below the minimum page size, so scoped
@@ -79,7 +81,7 @@ markdown/PHASE_LOG.md, markdown/PROMPTS.md
 
 - `node --test`: 171/171 in `node:lts`; all public JS + inline script compile;
   `git diff --check` clean.
-- `notes/phase-32-api-validation.js` on 18080: 32/32 (details in PHASE_LOG).
+- `notes/phase-32-api-validation.js` on 18080: 33/33 (details in PHASE_LOG).
 - `notes/phase-32-browser-validation.js`: full journey/race/responsive gate,
   zero unexpected console errors; captures in
   `/tmp/ops-dashboard-phase32-evidence/`.
@@ -117,13 +119,41 @@ the delta (`git diff 3563ccd`) plus this checklist:
    `position: relative` on `.run-id-wrap` (also covers the Phase 28 app-runs
    table). Confirm no visual regression there.
 4. Finding 4 (silent load-more failure): failed scoped pages now render a
-   visible retryable message and announce politely; the button stays enabled.
+   visible retryable message and announce in the polite live region; the button
+   stays enabled.
 5. Gate gaps: the API gate adds an exact after-cursor SQL comparison and a
    full entity-filtered walk at limit=25 (now 33 checks); the browser gate
    adds the acquisition + raw-list entry legs, deterministic route-intercepted
    failure/delay/hang scenarios (9a–9e), asserted wrapper containment, and all
    three widths in both schemes. PHASE_LOG's section-error and race-evidence
    sentences were rewritten to match (they previously overclaimed).
+
+## Second fix-round delta (2026-07-24, after the Codex re-review)
+
+The re-review returned needs-fixes (0 blocker/high/medium; 1 low + gate gaps +
+stale doc claims). Applied:
+
+1. (low) The failed-load-more announce ran BEFORE `renderEntityWorkspace`, whose
+   `resetView` cleared and re-hid the live region before the rAF text write
+   landed — so it never actually announced. Fixed by moving the announce inside
+   `renderEntityWorkspace` guarded by `st.pageError`, which also handles a case
+   a simple render-then-announce swap would miss: a late context-request settle
+   re-renders and would otherwise wipe the message. Step 9f asserts both the
+   announcement and its persistence across a later re-render.
+2. (gate) The scoped load-more failure path was untested because live entities
+   have <25 incidents (no natural page boundary). New step 9f injects a
+   `nextCursor` into the first scoped page, fails the load-more, and asserts
+   both the body message AND the visible, populated live region — this now
+   catches the bug in (1).
+3. (gate) Step 9d now performs a GENUINE delayed A→B→Jobs: all three
+   navigations fire while A's 2s-delayed requests are still in flight, then the
+   test waits for the late completions to land and asserts Jobs was never
+   repainted.
+4. (gate) New step 9b covers the reciprocal partial failure: context request
+   fails while incident records succeed (records render; the three context
+   sections each show honest failure text).
+5. (docs) This handoff's stale `Promise.allSettled` description and `32/32`
+   figure corrected; the "announces politely" claim is now backed by step 9f.
 
 Post-fix validation: 171/171 unit tests; 33/33 API checks; browser gate fully
 green including the injected-failure legs (expected-noise tolerance is scoped

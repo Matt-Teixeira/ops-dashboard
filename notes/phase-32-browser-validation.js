@@ -82,7 +82,6 @@ async function main() {
     "scoped loaded/matching counts missing");
   check(!/incidents overall/.test(ws.counts), "global total must not appear on the scoped page");
   results.workspace = ws;
-  console.log("checkpoint: workspace");
   await page.screenshot({ path: evidenceDir + "/01-workspace.png", fullPage: true });
 
   // -- 2. incident drill-down returns to the exact workspace ----------------
@@ -116,7 +115,6 @@ async function main() {
     await page.waitForSelector("#system-view h3");
   }
   results.drilldownReturns = true;
-  console.log("checkpoint: drilldownReturns");
 
   // -- 4. legacy #system= renders the same workspace ------------------------
   await page.goto(base + "/#system=" + encodeURIComponent(entity), { waitUntil: "networkidle" });
@@ -126,7 +124,6 @@ async function main() {
     "legacy alias is not the workspace: " + JSON.stringify(ws));
   check(ws.sections.length >= 3, "legacy alias missing sections");
   results.legacyAlias = ws;
-  console.log("checkpoint: legacyAlias");
 
   // -- 5. entry from connectivity keeps its return context ------------------
   await page.goto(base + "/#connectivity", { waitUntil: "networkidle" });
@@ -138,7 +135,6 @@ async function main() {
   ws = await page.evaluate(workspaceState);
   check(ws.back === "#connectivity", "workspace back should honor connectivity origin: " + ws.back);
   results.connectivityEntry = true;
-  console.log("checkpoint: connectivityEntry");
 
   // -- 6. system-signals, acquisition, and raw-list entries stay canonical ---
   await page.goto(base + "/#systems", { waitUntil: "networkidle" });
@@ -162,7 +158,6 @@ async function main() {
   ws = await page.evaluate(workspaceState);
   check(ws.back === "#incident-list", "workspace back should honor raw-list origin: " + ws.back);
   results.entryMatrix = true;
-  console.log("checkpoint: entryMatrix");
 
   // -- 7. non-SME workspace is honest ---------------------------------------
   await page.goto(base + "/#entity=__global__", { waitUntil: "networkidle" });
@@ -174,7 +169,6 @@ async function main() {
   check(ws.counts.includes("No connectivity record"), "must not fabricate SME connectivity for __global__");
   await page.screenshot({ path: evidenceDir + "/02-global-workspace.png", fullPage: true });
   results.nonSme = true;
-  console.log("checkpoint: nonSme");
 
   // -- 8. absent + 404 semantics --------------------------------------------
   expectingDeliberate404 = true;
@@ -183,7 +177,6 @@ async function main() {
     .test(document.querySelector("#system-view")?.textContent || ""));
   expectingDeliberate404 = false;
   results.notFound = true;
-  console.log("checkpoint: notFound");
 
   // -- 9. deterministic delayed/failed responses ------------------------------
   expectingInjectedFailure = true;
@@ -192,7 +185,14 @@ async function main() {
     return data.entities[1].entity;
   });
 
-  console.log("checkpoint: 9a");
+  // Sub-steps revisit the same #entity= hash; a goto to an identical URL is a
+  // same-document no-op, so reset to #jobs between steps to force a real
+  // hashchange-driven reload under the installed interception.
+  const resetRoute = async () => {
+    await page.evaluate(() => { location.hash = "#jobs"; });
+    await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
+  };
+
   // 9a. partial paint: incident-records request fails; summary/connectivity/
   // signals still render with honest per-section error text only for records.
   await page.route("**/api/incidents?*entity=*", (route) => route.abort());
@@ -209,16 +209,26 @@ async function main() {
   "connectivity should render despite records failure");
   await page.unroute("**/api/incidents?*entity=*");
 
-  console.log("checkpoint: 9b");
-  // Sub-steps revisit the same #entity= hash; a goto to an identical URL is a
-  // same-document no-op, so reset to #jobs between steps to force a real
-  // hashchange-driven reload under the installed interception.
-  const resetRoute = async () => {
-    await page.evaluate(() => { location.hash = "#jobs"; });
-    await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
-  };
+  // 9b. reciprocal partial paint: the combined context request fails while
+  // incident records succeed. The three context sections show honest failure
+  // text; the incident summary and records still render.
+  await resetRoute();
+  await page.route("**/api/entities/" + entity + "*", (route) => route.abort());
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
+  await page.waitForFunction(() => {
+    const text = document.querySelector("#system-view")?.textContent || "";
+    return /matching incident records loaded/.test(text) &&
+      /Couldn't load connectivity/.test(text) && !/Loading/.test(text);
+  });
+  ws = await page.evaluate(workspaceState);
+  check(/matching incident records loaded/.test(ws.counts), "records missing during context failure");
+  check(ws.counts.includes("Couldn't load the incident summary") &&
+    ws.counts.includes("Couldn't load connectivity") &&
+    ws.counts.includes("Couldn't load recent signals"),
+  "context sections should each show honest failure text");
+  await page.unroute("**/api/entities/" + entity + "*");
 
-  // 9b. delayed context: records paint first; the context section shells say
+  // 9c. delayed context: records paint first; the context section shells say
   // loading instead of hiding them; the late context then fills in.
   await resetRoute();
   await page.route("**/api/entities/" + entity + "*", async (route) => {
@@ -238,42 +248,41 @@ async function main() {
     "delayed context never filled its sections");
   await page.unroute("**/api/entities/" + entity + "*");
 
-  console.log("checkpoint: 9c");
-  // 9c. A -> B while A's responses are still delayed: B renders, A's late
-  // completions never repaint or mix.
-  await page.route("**/api/entities/" + entity + "*", async (route) => {
+  // 9d. GENUINE delayed A -> B -> Jobs: all three navigations happen while A's
+  // requests are still in flight (2s delay, navigations within ~100ms). Jobs
+  // must win, and A's and B's late completions must never repaint it.
+  await page.route("**/api/entities/*", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     await route.continue();
   });
-  await page.route("**/api/incidents?*entity=" + entity + "*", async (route) => {
+  await page.route("**/api/incidents?*entity=*", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     await route.continue();
   });
   await resetRoute();
-  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
-  await page.waitForSelector("#system-view h3");
-  await page.evaluate((next) => { location.hash = "#entity=" + next; }, cardTwo);
-  await page.waitForFunction(() => /matching incident records loaded/
-    .test(document.querySelector("#system-view")?.textContent || ""));
-  await page.waitForTimeout(2500); // let A's delayed responses land and be dropped
-  ws = await page.evaluate(workspaceState);
-  check(ws.heading === "Entity " + cardTwo && !ws.counts.includes(entity),
-    "A->B with delayed A responses left mixed content: " + ws.heading);
-  await page.unroute("**/api/entities/" + entity + "*");
-  await page.unroute("**/api/incidents?*entity=" + entity + "*");
-
-  console.log("checkpoint: 9d");
-  // 9d. entity -> jobs while loading: no stale view/chrome repaint.
-  await page.evaluate(() => { location.hash = "#jobs"; });
+  await page.evaluate(({ a, b }) => {
+    location.hash = "#entity=" + a;   // A: requests fire, delayed 2s
+    location.hash = "#entity=" + b;   // B: supersedes A before A lands
+    location.hash = "#jobs";          // Jobs: supersedes B, all still in flight
+  }, { a: entity, b: cardTwo });
   await page.waitForFunction(() => !document.querySelector("#dashboard").hidden);
-  const jobsChrome = await page.evaluate(() => ({
+  const midFlight = await page.evaluate(() => ({
     nav: document.querySelector("[aria-current=page]")?.id,
     workspaceHidden: document.querySelector("#system-view").hidden,
   }));
-  check(jobsChrome.nav === "nav-jobs" && jobsChrome.workspaceHidden,
-    "entity -> jobs race left stale view/chrome: " + JSON.stringify(jobsChrome));
+  check(midFlight.nav === "nav-jobs" && midFlight.workspaceHidden,
+    "delayed A->B->Jobs did not land on Jobs: " + JSON.stringify(midFlight));
+  await page.waitForTimeout(2500); // let every delayed A/B response land and be dropped
+  const afterLanding = await page.evaluate(() => ({
+    nav: document.querySelector("[aria-current=page]")?.id,
+    workspaceHidden: document.querySelector("#system-view").hidden,
+    jobsVisible: !document.querySelector("#dashboard").hidden,
+  }));
+  check(afterLanding.nav === "nav-jobs" && afterLanding.workspaceHidden && afterLanding.jobsVisible,
+    "late A/B completions repainted over Jobs: " + JSON.stringify(afterLanding));
+  await page.unroute("**/api/entities/*");
+  await page.unroute("**/api/incidents?*entity=*");
 
-  console.log("checkpoint: 9e");
   // 9e. refresh recovery: with the workspace's context request HUNG, refresh
   // must re-enable promptly (reload started, sections own their waiting) and a
   // re-click after the hang clears must fully load.
@@ -291,9 +300,54 @@ async function main() {
   await page.waitForFunction(() => /cross-fleet incident group/
     .test(document.querySelector("#system-view")?.textContent || ""));
   check(!(await page.locator("#refresh").isDisabled()), "refresh stranded after hung request recovery");
+
+  // 9f. scoped load-more failure. Live entities have <25 incidents so no page
+  // boundary occurs naturally; inject a nextCursor into the first scoped page,
+  // then fail the load-more request. The error must be VISIBLE (body text) and
+  // ANNOUNCED (the polite live region actually holds the text — the ordering
+  // bug from the re-review left the region cleared by resetView).
+  await resetRoute();
+  await page.route("**/api/incidents?*entity=" + entity + "*", async (route) => {
+    if (route.request().url().includes("cursor=")) return route.abort(); // load-more fails
+    const resp = await route.fetch();
+    const body = await resp.json();
+    body.nextCursor = "aW5qZWN0ZWQ"; // opaque; the abort above stops it reaching SQL
+    await route.fulfill({ response: resp, body: JSON.stringify(body) });
+  });
+  await page.evaluate((id) => { location.hash = "#entity=" + id; }, entity);
+  await page.waitForSelector("[data-entity-incidents-more]");
+  await page.locator("[data-entity-incidents-more]").click();
+  await page.waitForFunction(() => {
+    const region = document.querySelector("#system-view p.run-msg[role=status]");
+    return region && !region.hidden && /Couldn't load more incident records/.test(region.textContent || "");
+  }, null, { timeout: 5000 });
+  const loadMore = await page.evaluate(() => {
+    const region = document.querySelector("#system-view p.run-msg[role=status]");
+    const button = document.querySelector("[data-entity-incidents-more]");
+    return {
+      bodyHasError: /Couldn't load more incident records/.test(document.querySelector("#system-view")?.textContent || ""),
+      regionHidden: !region || region.hidden,
+      regionText: region ? region.textContent : null,
+      buttonEnabled: !!button && !button.disabled,
+    };
+  });
+  check(loadMore.bodyHasError, "scoped load-more failure not shown in body");
+  check(!loadMore.regionHidden && /Couldn't load more incident records/.test(loadMore.regionText || ""),
+    "scoped load-more failure not announced in the visible live region: " + JSON.stringify(loadMore));
+  check(loadMore.buttonEnabled, "load-more button should stay enabled for retry");
+  // The announcement must survive a later re-render (e.g. a late context settle
+  // whose resetView would otherwise wipe the region).
+  await page.waitForTimeout(2000);
+  const persisted = await page.evaluate(() => {
+    const region = document.querySelector("#system-view p.run-msg[role=status]");
+    return !!region && !region.hidden && /Couldn't load more incident records/.test(region.textContent || "");
+  });
+  check(persisted, "load-more announcement was wiped by a later re-render");
+  await page.unroute("**/api/incidents?*entity=" + entity + "*");
+  results.loadMoreFailure = true;
+
   expectingInjectedFailure = false;
   results.deterministicRaces = true;
-  console.log("checkpoint: deterministicRaces");
 
   // -- 10. responsive containment, light and dark ----------------------------
   for (const [width, height, scheme] of [
@@ -323,7 +377,6 @@ async function main() {
     await ctx.close();
   }
   results.responsive = true;
-  console.log("checkpoint: responsive");
 
   check(faults.length === 0, "console/page errors: " + JSON.stringify(faults));
   console.log(JSON.stringify({ base, entity, results }, null, 2));
