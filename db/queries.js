@@ -368,6 +368,11 @@ WITH base AS (
     state IN ('open', 'recurring', 'acknowledged') AS is_active,
     state IN ('resolved', 'suppressed') AS is_terminal
   FROM incidents.incidents
+  -- Optional single-entity scope (Phase 32). NULL means the full Phase 30 read;
+  -- a bound safe id narrows the same shape to one entity for the workspace
+  -- context endpoint. NULL sentinel (not 'all'): 'all' is itself a valid
+  -- producer entity string under the safe-id contract.
+  WHERE ($1::text IS NULL OR entity = $1)
 ),
 entity_summary AS (
   SELECT
@@ -478,7 +483,7 @@ ORDER BY
 // value sinks last. Within each class rank severity, recency, then id for stability.
 const INCIDENTS_LIST_SQL = `
 WITH ranked AS (
-  SELECT id, entity, occurrence_count, last_seen, category, category_source,
+  SELECT id, entity, occurrence_count, first_seen, last_seen, category, category_source,
          severity, state,
          CASE WHEN state IN ('open', 'recurring', 'acknowledged') THEN 0
               WHEN state IN ('resolved', 'suppressed') THEN 1 ELSE 2 END AS activity_rank,
@@ -488,6 +493,7 @@ WITH ranked AS (
   WHERE ($1 = 'all' OR severity = $1)
     AND ($2 = 'all' OR state = $2)
     AND ($3 = 'all' OR category = $3)
+    AND ($9::text IS NULL OR entity = $9)
 )
 SELECT *
 FROM ranked
@@ -502,6 +508,19 @@ ORDER BY
   activity_rank ASC, severity_rank ASC, last_seen DESC NULLS LAST,
   id DESC
 LIMIT $4;
+`;
+
+// Exact matching-row count for an entity-scoped list (Phase 32). Same filter
+// semantics as INCIDENTS_LIST_SQL's ranked CTE, no cursor: the workspace states
+// how many records match the current scope, distinct from the global rollup and
+// from the loaded page length. Only called when an entity scope is present.
+const INCIDENTS_SCOPED_COUNT_SQL = `
+SELECT count(*)::int AS n
+FROM incidents.incidents
+WHERE ($1 = 'all' OR severity = $1)
+  AND ($2 = 'all' OR state = $2)
+  AND ($3 = 'all' OR category = $3)
+  AND entity = $4;
 `;
 
 // One incident by id (route validates the integer shape before it gets here).
@@ -541,14 +560,18 @@ function incidentsRollup() {
   return db.any(INCIDENTS_ROLLUP_SQL);
 }
 
-function incidentEntitySummaries() {
-  return db.any(INCIDENT_ENTITY_SUMMARIES_SQL);
+function incidentEntitySummaries(entity = null) {
+  return db.any(INCIDENT_ENTITY_SUMMARIES_SQL, [entity]);
 }
 
-function incidentsList(severity = "all", state = "all", category = "all", limit = 101, cursor = null) {
+function incidentsList(severity = "all", state = "all", category = "all", limit = 101, cursor = null, entity = null) {
   return db.any(INCIDENTS_LIST_SQL, [severity, state, category, limit,
     cursor && cursor.activityRank, cursor && cursor.severityRank,
-    cursor && cursor.lastSeen, cursor && cursor.id]);
+    cursor && cursor.lastSeen, cursor && cursor.id, entity]);
+}
+
+function incidentsScopedCount(severity = "all", state = "all", category = "all", entity) {
+  return db.one(INCIDENTS_SCOPED_COUNT_SQL, [severity, state, category, entity]);
 }
 
 function incidentById(id) {
@@ -574,4 +597,4 @@ function ping() {
   return db.one("SELECT 1 AS ok");
 }
 
-module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, incidentsRollup, incidentEntitySummaries, incidentsList, incidentById, incidentEvents, ping };
+module.exports = { jobsLatestSince, recentErrors, runById, connectivity, appRuns, appHealth, acquisitionSystems, systemsLatest, systemDetail, incidentsRollup, incidentEntitySummaries, incidentsList, incidentsScopedCount, incidentById, incidentEvents, ping };

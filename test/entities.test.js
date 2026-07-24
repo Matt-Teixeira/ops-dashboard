@@ -259,3 +259,86 @@ test("server exposes the thin sanitized GET /api/entities handler", () => {
   assert.match(match[1], /entitiesLib\.shapeEntityResponse\(rows, asOf\)/);
   assert.match(match[1], /next\(err\)/, "shared sanitized error handler owns failures");
 });
+
+// --- Phase 32: entity workspace context ------------------------------------
+
+const { shapeEntityContext, entityContextIsEmpty } = require("../lib/entities");
+
+test("shapeEntityContext: one entity's summary, connectivity, and signals stay separate", () => {
+  const summaryRows = [
+    row({ entity: "SME01139", category: "rsync_io_timeout", category_source: "classifier" }),
+    row({ entity: "SME01139", category: "rsync_io_timeout", category_source: "oracle" }),
+  ];
+  const context = shapeEntityContext({
+    entity: "SME01139",
+    summaryRows,
+    connectivity: [{ source: "MMB", operationalState: "OFFLINE" }],
+    signals: [{ app: "data_acquisition", type: "ERROR", func: "execRsync", count: 4 }],
+    windowHours: 24,
+    asOf: "2026-07-24T12:00:00Z",
+  });
+  assert.equal(context.entity, "SME01139");
+  assert.equal(context.entityKind, "sme");
+  assert.equal(context.asOf, "2026-07-24T12:00:00.000Z");
+  assert.equal(context.signalWindowHours, 24);
+  assert.equal(context.incidentSummary.entity, "SME01139");
+  // provenance survives the merge: both sources listed on the one category
+  assert.deepEqual(context.incidentSummary.categories[0].sources, ["classifier", "oracle"]);
+  assert.equal(context.connectivity.length, 1);
+  assert.equal(context.signals.length, 1);
+  assert.equal(entityContextIsEmpty(context), false);
+});
+
+test("shapeEntityContext: non-SME kinds are honest; unscoped rows resolve the requested id only", () => {
+  const globalContext = shapeEntityContext({
+    entity: "__global__",
+    summaryRows: [row({ entity: "__global__" }), row({ entity: "SME99999" })],
+    connectivity: [],
+    signals: [],
+    windowHours: 48,
+  });
+  assert.equal(globalContext.entityKind, "global");
+  assert.equal(globalContext.incidentSummary.entity, "__global__");
+  assert.equal(shapeEntityContext({ entity: "RTT00001", summaryRows: [row({ entity: "RTT00001" })] }).entityKind, "other");
+});
+
+test("shapeEntityContext: partial sources are valid workspaces; all-empty is the 404 rule", () => {
+  const incidentsOnly = shapeEntityContext({ entity: "SME08284", summaryRows: [row({ entity: "SME08284" })], connectivity: [], signals: [], windowHours: 24 });
+  assert.equal(entityContextIsEmpty(incidentsOnly), false);
+  const connectivityOnly = shapeEntityContext({ entity: "SME10262", summaryRows: [], connectivity: [{ source: "MMB" }], signals: [], windowHours: 24 });
+  assert.equal(connectivityOnly.incidentSummary, null);
+  assert.equal(entityContextIsEmpty(connectivityOnly), false);
+  const signalsOnly = shapeEntityContext({ entity: "SME00042", summaryRows: [], connectivity: [], signals: [{ app: "a", type: "WARN" }], windowHours: 24 });
+  assert.equal(entityContextIsEmpty(signalsOnly), false);
+  const empty = shapeEntityContext({ entity: "SME00000", summaryRows: [], connectivity: [], signals: [], windowHours: 24 });
+  assert.equal(entityContextIsEmpty(empty), true);
+  assert.equal(entityContextIsEmpty(null), true);
+  // defensive: malformed source payloads shape to empty arrays, never throw
+  const malformed = shapeEntityContext({ entity: "SME1", summaryRows: null, connectivity: "junk", signals: undefined, windowHours: "x" });
+  assert.deepEqual(malformed.connectivity, []);
+  assert.deepEqual(malformed.signals, []);
+  assert.equal(malformed.signalWindowHours, 0);
+  assert.equal(entityContextIsEmpty(malformed), true);
+});
+
+test("Phase 32 SQL: summaries take an optional bound entity; scoped reads stay read-only", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "db", "queries.js"), "utf8");
+  const sql = src.match(/const INCIDENT_ENTITY_SUMMARIES_SQL = `([\s\S]*?)`;/)[1];
+  // NULL sentinel, not 'all': 'all' is itself a valid producer entity id.
+  assert.match(sql, /\$1::text IS NULL OR entity = \$1/, "optional entity scope is bound");
+  assert.doesNotMatch(sql, /\$\{/);
+});
+
+test("server: GET /api/entities/:id validates the id, composes the three bounded reads, 404s only when all are empty", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const match = src.match(/app\.get\("\/api\/entities\/:id",([\s\S]*?)\n  \}\);/);
+  assert.ok(match, "GET /api/entities/:id route found");
+  const handler = match[1];
+  assert.match(handler, /entitiesLib\.isSafeEntity\(entity\)/, "safe-id gate before any query");
+  assert.match(handler, /status\(400\)/, "invalid ids fail closed");
+  assert.match(handler, /queries\.incidentEntitySummaries\(entity\)/, "bound single-entity summary");
+  assert.match(handler, /queries\.systemDetail\(entity, since\)/, "existing partition-pruned signals read");
+  assert.match(handler, /SYSTEMS_WINDOW_MAX_HOURS/, "48h ceiling reused");
+  assert.match(handler, /entityContextIsEmpty/, "404 only when every source is empty");
+  assert.match(handler, /next\(err\)/, "shared sanitized error handler");
+});

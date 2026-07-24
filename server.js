@@ -319,15 +319,27 @@ function buildApp() {
     const state = incidentsLib.normalizeState(req.query.state);
     const category = incidentsLib.normalizeCategory(req.query.category);
     const limit = appRunsLib.clampInt(req.query.limit, 100, 25, 200);
+    // Optional entity scope (Phase 32). Omitted -> the exact global list. A
+    // PROVIDED value is caller intent, so unlike severity/state/category it is
+    // never coerced to 'all': invalid/overlong/empty values fail closed with the
+    // existing generic 400 and never reach SQL.
+    let entity = null;
+    if (req.query.entity != null) {
+      if (!entitiesLib.isSafeEntity(req.query.entity)) {
+        return res.status(400).json({ error: "invalid entity id" });
+      }
+      entity = req.query.entity;
+    }
     let cursor = null;
     if (req.query.cursor != null) {
       try { cursor = incidentsLib.decodeCursor(req.query.cursor); }
       catch { return res.status(400).json({ error: "invalid incident cursor" }); }
     }
     try {
-      const [rollupRows, listRows] = await Promise.all([
+      const [rollupRows, listRows, scopedCount] = await Promise.all([
         queries.incidentsRollup(),
-        queries.incidentsList(severity, state, category, limit + 1, cursor),
+        queries.incidentsList(severity, state, category, limit + 1, cursor, entity),
+        entity == null ? null : queries.incidentsScopedCount(severity, state, category, entity),
       ]);
       const hasMore = listRows.length > limit;
       const pageRows = hasMore ? listRows.slice(0, limit) : listRows;
@@ -335,10 +347,15 @@ function buildApp() {
       res.json({
         asOf: new Date().toISOString(),
         filters: { severity, state, category },
+        // rollup stays GLOBAL by contract (the tiles/facets self-check). The
+        // additive entity/scopedTotal pair carries the scoped truth so callers
+        // never confuse the three counts: global rollup total, scoped matching
+        // total, and loaded page length.
         rollup: incidentsLib.shapeRollup(rollupRows),
         count: incidents.length,
         pageSize: limit,
         nextCursor: hasMore ? incidentsLib.encodeCursor(pageRows[pageRows.length - 1]) : null,
+        ...(entity == null ? {} : { entity, scopedTotal: scopedCount.n }),
         incidents,
       });
     } catch (err) {
@@ -354,6 +371,45 @@ function buildApp() {
       const rows = await queries.incidentEntitySummaries();
       const asOf = new Date().toISOString();
       res.json(entitiesLib.shapeEntityResponse(rows, asOf));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Entity workspace context (Phase 32): one thin, read-only correlation of the
+  // three existing bounded sources for a single safe id — the Phase 30 incident
+  // summary (bound single-entity variant of the same grouped read), current
+  // decorated connectivity (Phase 20 truth model), and the partition-pruned
+  // recent (app,type,func) signal breakdown (warn_error_logs only, ≤48h — the
+  // Phase 19 review measured 168h over budget). Incident RECORDS deliberately
+  // live on the paged /api/incidents?entity= contract, not here. 404 only when
+  // all three sources are empty; a partial-source entity is a valid workspace.
+  app.get("/api/entities/:id", async (req, res, next) => {
+    const entity = req.params.id; // express decodes %xx
+    if (!entitiesLib.isSafeEntity(entity)) {
+      return res.status(400).json({ error: "invalid entity id" });
+    }
+    try {
+      const windowHours = appRunsLib.clampInt(req.query.windowHours, SYSTEMS_WINDOW_HOURS, 1, SYSTEMS_WINDOW_MAX_HOURS);
+      const now = new Date();
+      const since = new Date(now.getTime() - windowHours * 60 * 60 * 1000).toISOString();
+      const [summaryRows, connRows, signalRows] = await Promise.all([
+        queries.incidentEntitySummaries(entity),
+        queries.connectivity(),
+        queries.systemDetail(entity, since),
+      ]);
+      const context = entitiesLib.shapeEntityContext({
+        entity,
+        summaryRows,
+        connectivity: systemsLib.pickSystem(connectivity.decorate(connRows, now), entity),
+        signals: systemsLib.shapeDetail(signalRows),
+        windowHours,
+        asOf: now.toISOString(),
+      });
+      if (entitiesLib.entityContextIsEmpty(context)) {
+        return res.status(404).json({ error: "entity not found" });
+      }
+      res.json(context);
     } catch (err) {
       next(err);
     }

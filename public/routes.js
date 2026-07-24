@@ -16,14 +16,19 @@
     appruns: "util.app_run_logs",
     acq: "stats.acquisition_history",
     systems: "util.app_run_logs + alert.*",
-    system: "util.app_run_logs + alert.*",
-    entity: "util.app_run_logs + alert.*",
+    // The entity workspace (Phase 32) correlates all three read surfaces; the
+    // legacy system route renders the same page, so both declare the same scope.
+    system: "incidents.* + alert.* + util.app_run_logs",
+    entity: "incidents.* + alert.* + util.app_run_logs",
     "incident-list": "incident-engine · incidents.incidents",
     incident: "incident-engine · incidents.*",
   };
+  // `system` falls back to Entities (Phase 32): the legacy route is an alias of
+  // the entity workspace, and a bare bookmark with no `from` returns to the
+  // default dashboard rather than the System signals list it never came from.
   const PARENTS = {
     entities: "entities", jobs: "entities", run: "jobs", connectivity: "entities",
-    appruns: "jobs", acq: "jobs", systems: "entities", system: "systems",
+    appruns: "jobs", acq: "jobs", systems: "entities", system: "entities",
     entity: "entities", "incident-list": "entities", incident: "incident-list",
   };
 
@@ -93,14 +98,14 @@
       : id === "incident-list" ? "Incident list"
       : id === "run" ? `Run ${params.run || "?"}`
       : id === "entity" ? `Entity ${params.entity || "?"}`
-      : id === "system" ? `System ${params.system || "?"}`
+      // Legacy alias renders the same entity workspace, so it labels the same.
+      : id === "system" ? `Entity ${params.system || "?"}`
       : id === "incident" ? `Incident #${params.incident || "?"}`
       : id === "appruns" ? `Run log — ${params.app || "?"}`
       : id === "acq" ? "Acquisition by system"
       : id[0].toUpperCase() + id.slice(1);
     const nav = ["run", "appruns", "acq"].includes(id) ? "jobs"
-      : id === "entity" ? "entities"
-      : id === "system" ? "systems"
+      : id === "entity" || id === "system" ? "entities"
       : id === "incident" ? "incident-list" : id;
     const fallback = PARENTS[id];
     const from = params.from || fallback;

@@ -108,10 +108,12 @@ test("shapeIncidents: malformed confidence -> null, never NaN (Codex low finding
 });
 
 test("shapeIncidentList: lean projection preserves provenance and omits detail payload", () => {
-  const [i] = shapeIncidentList([{ id: "9", entity: "SME1", severity: "high", state: "open", category: "unknown", category_source: "oracle", occurrence_count: "7", last_seen: "2026-07-21T00:00:00Z", assessment: { reasons: ["large"] }, sample_message: "large" }]);
-  assert.deepEqual(i, { id: 9, entity: "SME1", severity: "high", state: "open", category: "unknown", categorySource: "oracle", occurrenceCount: 7, lastSeen: "2026-07-21T00:00:00Z" });
+  const [i] = shapeIncidentList([{ id: "9", entity: "SME1", severity: "high", state: "open", category: "unknown", category_source: "oracle", occurrence_count: "7", first_seen: "2026-07-19T00:00:00Z", last_seen: "2026-07-21T00:00:00Z", assessment: { reasons: ["large"] }, sample_message: "large" }]);
+  assert.deepEqual(i, { id: 9, entity: "SME1", severity: "high", state: "open", category: "unknown", categorySource: "oracle", occurrenceCount: 7, firstSeen: "2026-07-19T00:00:00Z", lastSeen: "2026-07-21T00:00:00Z" });
   assert.equal("assessment" in i, false);
   assert.equal("sampleMessage" in i, false);
+  // firstSeen is additive (Phase 32) and defensive like lastSeen
+  assert.equal(shapeIncidentList([{ id: 1 }])[0].firstSeen, null);
 });
 
 test("incident cursor: opaque round trip and malformed inputs fail closed", () => {
@@ -242,4 +244,22 @@ test("incidents SQL: bound params, no interpolation, no verbose_log, index-frien
   assert.match(events, /ORDER BY dt DESC\n/, "plain dt DESC -- must match the index ordering exactly");
   assert.doesNotMatch(events, /NULLS LAST/, "NULLS LAST breaks the index match and forces fetch-all+sort");
   assert.match(events, /LIMIT \$3/, "drill-down bounded");
+});
+
+test("Phase 32: entity scope is bound (NULL sentinel) and the scoped count mirrors the list filters", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "db", "queries.js"), "utf8");
+  const list = src.match(/const INCIDENTS_LIST_SQL = `([\s\S]*?)`;/)[1];
+  // NULL means "no scope" -- 'all' would be ambiguous because it is itself a
+  // valid producer entity under the safe-id contract.
+  assert.match(list, /\$9::text IS NULL OR entity = \$9/, "entity scope bound as $9");
+  assert.match(list, /first_seen/, "lean rows carry first_seen for the workspace");
+  const count = src.match(/const INCIDENTS_SCOPED_COUNT_SQL = `([\s\S]*?)`;/)[1];
+  assert.doesNotMatch(count, /\$\{/, "no interpolation");
+  assert.doesNotMatch(count, /\b(INSERT|UPDATE|DELETE|TRUNCATE)\b/i, "read-only");
+  assert.match(count, /\$1 = 'all' OR severity = \$1/, "same severity semantics as the list");
+  assert.match(count, /\$2 = 'all' OR state = \$2/, "same state semantics as the list");
+  assert.match(count, /\$3 = 'all' OR category = \$3/, "same category semantics as the list");
+  assert.match(count, /AND entity = \$4/, "scoped count is always entity-bound");
+  // The cursor tuple did NOT grow: entity narrows the ranked set, order unchanged.
+  assert.match(list, /activity_rank ASC, severity_rank ASC, last_seen DESC NULLS LAST/);
 });

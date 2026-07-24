@@ -8,6 +8,134 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Phase 32 — Entity Workspace & Incident Drill-Down Integration
+
+Date: 2026-07-24
+
+Status: Completed (pending independent review before merge)
+
+Prompt: `prompts/prompt_32_entity_workspace_and_incident_drilldown.txt`
+
+Git Commit: Pending
+
+Review Artifacts:
+
+- Review handoff: `notes/review_handoff_phase_32.md`
+- Reproducible live gate: `notes/phase-32-api-validation.js` (32/32 checks)
+- Reproducible browser gate: `notes/phase-32-browser-validation.js`
+- Responsive captures: `/tmp/ops-dashboard-phase32-evidence/*.png`
+
+## Entry decision gate
+
+Satisfied before implementation, per the prompt's 2026-07-24 amendment: the
+independent post-Phase-31 review (`notes/review_phase_31.md`) recorded the
+SME16380 journey — repeated cross-view navigation, lost SME context on
+`#entity=` (which reused the System signals controller), and a raw incident
+list that cannot scope by entity.
+
+## Goals / Built
+
+- **Entity-scoped incident list.** `GET /api/incidents` accepts optional
+  `entity=<safe-id>`, bound as a NULL-sentinel SQL param (`$9`) inside the
+  Phase 24 ranked CTE — 'all' would be ambiguous because it is itself a valid
+  producer entity string. The activity/severity/time/id ORDER BY and cursor
+  tuple are unchanged; severity, state, category, entity, limit, and cursor all
+  compose. A provided-but-invalid entity fails closed with the generic 400 and
+  never reaches SQL (unlike severity/state/category, a provided entity is
+  caller intent and is never coerced to 'all'). Scoped responses carry additive
+  `entity` + `scopedTotal` (exact matching-row count under the same filters);
+  global responses are byte-shape identical except the additive lean-row
+  `firstSeen` field. The global rollup stays global by contract.
+- **Entity context endpoint.** `GET /api/entities/:id?windowHours=<1..48>`
+  (default 24; the 48h ceiling is the Phase 19 evidence) composes three
+  existing bounded reads in parallel: the Phase 30 grouped summary read with a
+  new optional bound entity predicate, decorated Phase 20 connectivity picked
+  for the id, and the partition-pruned `systemDetail` signals breakdown
+  (`warn_error_logs` only). Returns `{asOf, entity, entityKind,
+  incidentSummary, connectivity, signalWindowHours, signals}`; 404 only when
+  all three sources are empty; incident RECORDS stay on the paged list contract.
+- **Entity workspace page.** `#entity=<id>` is now a dedicated semantic page
+  (incidents first — summary + category provenance + active-first paged rows;
+  current connectivity second with stale-vs-current truth; recent run-log
+  signals third, labeled as recent activity, not status or causality). Each
+  section owns its loading/empty/error text; a combined-context failure renders
+  honestly without erasing incident records, and vice versa. `#system=<id>` is
+  a permanent legacy alias rendering the same workspace (same label, Entities
+  nav, Entities default return). Non-SME ids are honest about kind
+  (`__global__` → "cross-fleet incident group…", never fabricated connectivity).
+- **Canonical links.** The shared `systemHref` helper became `entityHref`
+  (`#entity=`), converting Entities cards, connectivity, acquisition, system
+  signals, and raw incident list/detail in one place; `entityCell` now links
+  every safe producer id (non-SME included); the non-SME notice links each
+  group to its scoped workspace. `entity:<id>` return tokens flow through
+  incident and run detail; all inbound `#system=` bookmarks and `system:<id>`
+  tokens keep working. `/api/systems/:id` and `#systems` remain unchanged.
+- **Race safety.** `showEntity` guards with the monotonic `runReq` token; both
+  workspace reads run in parallel so refresh replaces context + first incident
+  page together; scoped load-more dedupes by id and drops stale completions
+  (`st.req !== runReq`).
+
+## Schema Facts Confirmed (live DB, 2026-07-24, as `ops_dashboard_ro`)
+
+- 540 incidents across 235 entities; max 12 incidents per entity (re-sampled at
+  the gate as the prompt requires). 231 entities exist in both incidents and
+  alert.*; 4 SMEs are incidents-only (e.g. SME08284); 239 connectivity ids have
+  no incidents (e.g. SME10262); non-SME groups are `__global__` (11) and
+  `RTT00001` (1). No signals-only SME existed in the last 24h (case covered by
+  unit tests instead).
+- Entity-filtered ranked list plan: 0.26 ms; bare entity predicate scan
+  0.13 ms. `systemDetail` at the 48h ceiling: 119 ms (partition-pruned, request
+  path OK, matching Phase 19 expectations).
+- Role check: SELECT true / INSERT false on `incidents.incidents`.
+
+## Validation
+
+- `node --test` in `node:lts`: **171/171 pass** (165 prior + 6 new: scoped SQL
+  guards, lean-row `firstSeen`, context shaping incl. partial/empty/404 rule
+  and non-SME kinds, route alias semantics, server handler guards).
+- Live gate (`notes/phase-32-api-validation.js`, disposable app on 18080):
+  **32/32 checks** — scopedTotal equals direct SQL; scoped page order equals
+  the Phase 24 SQL order exactly; entity+cursor and entity+facet-filter
+  composition; global response has no new keys and its full cursor walk stayed
+  540/540 duplicate-free; six malformed entity inputs → 400; Phase 29 tampered
+  cursor probes re-run WITH the entity filter → 400; context reconciles
+  byte-for-byte with `/api/entities`, `/api/connectivity`, and the preserved
+  `/api/systems/:id`; window clamp 1..48/default 24; partial-source and
+  non-SME workspaces 200; absent id 404; invalid id 400.
+- Browser gate (`notes/phase-32-browser-validation.js`, Playwright): card →
+  workspace → incident detail → exact return; signals run link → return;
+  legacy `#system=` renders the identical workspace; connectivity/systems
+  entries carry accurate return tokens; `__global__` honest; deliberate-404
+  empty state; SME A → SME B → Jobs races leave no mixed content/chrome and
+  never strand the refresh button; 390/768/1440 light+dark with zero body
+  overflow; zero unexpected console/page errors. Representative check landed on
+  SME16380 — the exact Phase 31 friction journey — now one page.
+
+## Decisions
+
+- NULL sentinel (not `'all'`) for the optional entity SQL params, documented in
+  both queries.
+- Provided-but-invalid `entity` → 400 rather than normalize-to-all: silently
+  widening an explicit scope to the global list would misrepresent the data.
+- The workspace page reuses the `system-view` section and replaces the old
+  `showSystem`/`renderSystem` controller outright (the alias renders the same
+  page, so keeping the dead view invited drift). `/api/systems/:id` is
+  preserved per the prompt's non-goals and doubles as reconciliation evidence.
+- The scoped page intentionally omits the global rollup total; it shows
+  "N of M matching incident records loaded" only.
+
+## Review Checklist Outcome
+
+Scope within prompt (non-goals respected: no writes/DDL/grants, no new data
+source, no verbose_log, no health-merging or causality claims); read-only role
+confirmed live; time-windowed query reuses the existing partition-pruned
+`systemDetail`; request-path timings well under a second; inputs validated
+before SQL (safe-id gate, fail-closed cursor unchanged); API shapes preserved
+(additive only); `.env` untouched; docs updated (this entry + PROMPTS.md).
+Ready for the independent post-implementation review before merge to main.
+
+---
+
 # Phase 31 — Entity-First Incident Dashboard & Card Experience
 
 Date: 2026-07-21

@@ -13,7 +13,21 @@ test("entity-first routes and preserved route families have accurate parents/sou
   assert.equal(Routes.parse("#acq-systems").source, "stats.acquisition_history");
   assert.equal(Routes.parse("#incident=12").nav, "incident-list");
   assert.equal(Routes.parse("#entity=SME1&from=entities").nav, "entities");
-  assert.equal(Routes.parse("#system=SME1").returnHref, "#systems");
+  // Phase 32: the legacy system route is an alias of the entity workspace — it
+  // labels as the entity, owns the Entities nav, declares the workspace's
+  // three-source scope, and a bare bookmark returns to the Entities default.
+  const legacy = Routes.parse("#system=SME1");
+  assert.equal(legacy.nav, "entities");
+  assert.equal(legacy.label, "Entity SME1");
+  assert.equal(legacy.returnHref, "#");
+  assert.equal(legacy.source, "incidents.* + alert.* + util.app_run_logs");
+  assert.equal(Routes.parse("#entity=SME1").source, "incidents.* + alert.* + util.app_run_logs");
+  // A supplied safe origin still wins over the fallback.
+  assert.equal(Routes.parse("#system=SME1&from=systems").returnHref, "#systems");
+  assert.equal(Routes.parse("#entity=SME1&from=connectivity").returnHref, "#connectivity");
+  // entity:<id> return tokens round-trip for incident/run detail returns.
+  assert.equal(Routes.parse("#incident=9&from=entity%3ASME1").returnHref, "#entity=SME1");
+  assert.equal(Routes.fromHref("entity:SME1"), "#entity=SME1");
 });
 
 test("compound run keeps hint and validated return context", () => {

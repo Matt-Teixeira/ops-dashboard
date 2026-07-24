@@ -192,7 +192,8 @@
   <!-- Per-system list: systems with recent issues across all apps. Populated by showSystems(). -->
   <section id="systems-view" hidden></section>
 
-  <!-- Per-system detail: one system's cross-app breakdown. Populated by showSystem(). -->
+  <!-- Entity workspace (Phase 32): one entity's incidents + connectivity + recent
+       signals. Populated by showEntity(); #system= renders here as a legacy alias. -->
   <section id="system-view" hidden></section>
 
   <!-- Incidents list (Phase 19): incident-engine's classified rollup. Populated by showIncidents(). -->
@@ -350,11 +351,23 @@
       const strong = document.createElement("strong");
       strong.textContent = "Non-SME producer groups: ";
       notice.appendChild(strong);
-      const names = groups.map((group) => String(group.entity || "(blank)"));
       notice.appendChild(document.createTextNode(
-        `${Number(summary.incidentCount) || 0} incidents across ${Number(summary.entityCount) || 0} groups` +
-        (names.length ? ` (${names.join(", ")})` : "") + ". ",
+        `${Number(summary.incidentCount) || 0} incidents across ${Number(summary.entityCount) || 0} groups`,
       ));
+      // Each safe group id links to its own scoped workspace (Phase 32); unsafe
+      // values stay plain text. The complete raw list remains one hop away.
+      groups.forEach((group, index) => {
+        notice.appendChild(document.createTextNode(index ? ", " : " ("));
+        const name = String(group.entity || "(blank)");
+        if (Routes.safeId(group.entity)) {
+          const a = document.createElement("a");
+          a.href = "#entity=" + encodeURIComponent(group.entity) + "&from=entities";
+          a.textContent = name;
+          notice.appendChild(a);
+        } else notice.appendChild(document.createTextNode(name));
+        if (index === groups.length - 1) notice.appendChild(document.createTextNode(")"));
+      });
+      notice.appendChild(document.createTextNode(". "));
       const link = document.createElement("a");
       link.href = "#incident-list"; link.textContent = "Inspect the complete incident list ›";
       notice.appendChild(link);
@@ -1078,12 +1091,13 @@
     const runHash = (id, hint, context) => "run=" + encodeURIComponent(id) + (hint ? "&at=" + encodeURIComponent(hint) : "") + "&from=" + encodeURIComponent(context || fromToken());
     const runHref = (id, hint, context) => "#" + runHash(id, hint, context);
 
-    // Per-system detail link (Phase 17). systemCell renders an id that navigates to the
-    // cross-app view for that equipment; the connectivity and acquisition tables reuse it.
-    const systemHref = (id) => "#system=" + encodeURIComponent(id) + "&from=" + encodeURIComponent(fromToken());
+    // Canonical per-entity workspace link (Phase 32; formerly #system=, which
+    // remains a working legacy alias). Connectivity, acquisition, system-signals,
+    // and incident tables all route equipment ids through this one helper.
+    const entityHref = (id) => "#entity=" + encodeURIComponent(id) + "&from=" + encodeURIComponent(fromToken());
     function systemCell(id) {
       const td = document.createElement("td");
-      if (id) { const a = document.createElement("a"); a.href = systemHref(id); a.textContent = id; td.appendChild(a); }
+      if (id) { const a = document.createElement("a"); a.href = entityHref(id); a.textContent = id; td.appendChild(a); }
       else { td.textContent = "—"; }
       return td;
     }
@@ -1891,48 +1905,157 @@
       renderSystems(view, data);
     }
 
-    function renderSystem(view, data) {
-      resetView(view);
-      view.appendChild(backLink());
-      const breakdown = Array.isArray(data.breakdown) ? data.breakdown : [];
-      const conn = Array.isArray(data.connectivity) ? data.connectivity : [];
+    // --- entity workspace (Phase 32) ------------------------------------------
+    // One read-only page per safe producer id, correlating the three existing
+    // sources WITHOUT conflating them: the entity's incident inventory (paged
+    // /api/incidents?entity=), its current connectivity truth (Phase 20 model),
+    // and its recent run-log signals (last N hours). #system= is a permanent
+    // legacy alias of the same page. Each section owns its loading/empty/error
+    // text; a signals failure never erases incident context and vice versa.
 
-      const h2 = document.createElement("h2");
-      h2.style.fontSize = ".95rem";
-      h2.style.margin = ".4rem 0 .2rem";
-      h2.textContent = (activeRoute.id === "entity" ? "Entity " : "System ") + (data.systemId || "?");
-      view.appendChild(h2);
+    let entityWs = null;
 
-      const sub = document.createElement("div");
-      sub.className = "muted";
-      const connText = conn.length
-        ? conn.map((c) => {
-          const current = c.operationalState || "STALE";
-          const historical = current === "STALE" ? ` (last result ${c.lastResult || c.status || "UNKNOWN"})` : "";
-          return `${c.source}: ${current}${historical}${c.errorCategory ? " (" + c.errorCategory + ")" : ""}`;
-        }).join(" · ")
-        : "no connectivity record";
-      sub.textContent = `· last ${data.windowHours}h · as of ${fmtTime(data.asOf)} · ${connText}`;
-      view.appendChild(sub);
+    const ENTITY_KIND_LABEL = {
+      global: "cross-fleet incident group (not one piece of equipment)",
+      other: "non-SME producer id",
+    };
 
-      if (!breakdown.length) {
-        const p = document.createElement("p");
-        p.className = "muted";
-        p.textContent = "No warnings or errors for this system in the window.";
-        view.appendChild(p);
-        return;
+    function entityIncidentsUrl(entity, cursor) {
+      const p = new URLSearchParams();
+      p.set("limit", "100");
+      p.set("entity", entity);
+      if (cursor) p.set("cursor", cursor);
+      return "/api/incidents?" + p.toString();
+    }
+
+    function wsHeading(text) {
+      const h3 = document.createElement("h3");
+      h3.style.fontSize = ".9rem";
+      h3.style.margin = ".9rem 0 .2rem";
+      h3.textContent = text;
+      return h3;
+    }
+
+    function wsMuted(text) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = text;
+      return p;
+    }
+
+    // Incident summary line + category chips from the context's single Phase 30
+    // card shape. Counts here are incident-table truth; the rows below remain
+    // the paged list contract with its own scoped total.
+    function wsIncidentSummary(view, summary) {
+      const parts = [
+        `${summary.activeIncidentCount} active of ${summary.incidentCount} incidents`,
+        summary.worstActiveSeverity ? `worst active: ${summary.worstActiveSeverity}` : null,
+        `${EntityView.occurrenceText(summary.occurrenceCount)} occurrences`,
+        summary.apps.length ? `apps: ${summary.apps.join(", ")}` : null,
+        summary.lastSeen ? `latest ${TimeView.instant(summary.lastSeen).relative}` : null,
+        summary.oldestActiveFirstSeen ? `oldest active ${TimeView.instant(summary.oldestActiveFirstSeen).relative}` : null,
+      ].filter(Boolean);
+      view.appendChild(wsMuted("· " + parts.join(" · ")));
+      if (summary.categories.length) {
+        const box = document.createElement("div");
+        box.className = "muted";
+        box.style.margin = ".1rem 0 .3rem";
+        box.appendChild(document.createTextNode("categories: "));
+        summary.categories.forEach((item, index) => {
+          if (index) box.appendChild(document.createTextNode(" · "));
+          const provenance = EntityView.categoryProvenance(item);
+          box.appendChild(categoryNode(item.category, provenance === "classifier" ? "classifier" : "oracle"));
+          box.appendChild(document.createTextNode(
+            ` ${item.activeCount} active/${item.count}` + (provenance === "mixed" ? " (includes oracle)" : "")));
+        });
+        view.appendChild(box);
       }
+    }
 
-      const table = prepareTable(document.createElement("table"), "Issue breakdown for system " + (data.systemId || "unknown"));
+    function wsIncidentTable(view, st) {
+      const table = prepareTable(document.createElement("table"), "Incidents for entity " + st.entity);
       const thead = document.createElement("thead");
       const htr = document.createElement("tr");
-      for (const h of ["App", "Type", "Func", "Count", "Latest run"]) {
+      for (const h of ["Severity", "State", "Category", "Count", "First seen", "Last seen", ""]) {
         htr.appendChild(headCell(h));
       }
       thead.appendChild(htr); table.appendChild(thead);
       const tb = document.createElement("tbody");
       const frag = document.createDocumentFragment();
-      for (const b of breakdown) {
+      for (const i of st.incidents) {
+        const tr = document.createElement("tr");
+        if (i.state !== "resolved" && (i.severity === "high" || i.severity === "critical")) tr.className = "row-ERROR";
+        else if (i.state !== "resolved" && i.severity === "medium") tr.className = "row-WARN";
+        const sv = cell(""); sv.appendChild(sevBadge(i.severity)); tr.appendChild(sv);
+        const stTd = cell(""); stTd.appendChild(stateBadge(i.state)); tr.appendChild(stTd);
+        tr.appendChild(categoryCell(i.category, i.categorySource));
+        tr.appendChild(cell(i.occurrenceCount, "num"));
+        tr.appendChild(timeCell(i.firstSeen));
+        tr.appendChild(timeCell(i.lastSeen));
+        const td = document.createElement("td");
+        const a = document.createElement("a");
+        a.href = "#incident=" + encodeURIComponent(i.id) + "&from=" + encodeURIComponent("entity:" + st.entity);
+        a.textContent = "view ›";
+        td.appendChild(a); tr.appendChild(td);
+        frag.appendChild(tr);
+      }
+      tb.appendChild(frag);
+      table.appendChild(tb);
+      appendTable(view, table);
+      // Three distinct counts, named: loaded rows vs scoped matching total. The
+      // global rollup total intentionally does not appear on this scoped page.
+      const counts = wsMuted(
+        `· ${st.incidents.length} of ${st.scopedTotal == null ? "?" : st.scopedTotal} matching incident records loaded` +
+        (st.nextCursor ? "" : " · end of matching records"));
+      view.appendChild(counts);
+      if (st.nextCursor) {
+        const more = document.createElement("button"); more.type = "button";
+        more.dataset.entityIncidentsMore = "true";
+        more.textContent = st.loading ? "loading…" : "load more incidents";
+        more.disabled = !!st.loading;
+        more.addEventListener("click", loadMoreEntityIncidents);
+        view.appendChild(more);
+      }
+    }
+
+    function wsConnectivity(view, rows) {
+      view.appendChild(wsHeading("Current connectivity"));
+      if (!rows.length) return view.appendChild(wsMuted("No connectivity record for this entity."));
+      for (const c of rows) {
+        const line = document.createElement("p");
+        line.style.margin = ".15rem 0";
+        const current = c.operationalState || "STALE";
+        const badge = document.createElement("span");
+        badge.className = "badge " + (current === "ONLINE" ? "SUCCESS" : current === "OFFLINE" ? "ERROR" : "stale");
+        badge.textContent = current;
+        line.appendChild(document.createTextNode(c.source + ": "));
+        line.appendChild(badge);
+        const bits = [];
+        if (current === "STALE") bits.push(`last result ${c.lastResult || "UNKNOWN"} — record too old to be current`);
+        if (c.errorCategory) bits.push(c.errorCategory);
+        if (c.checkedAgeMs != null) bits.push(`checked ${TimeView.age(c.checkedAgeMs)} ago`);
+        if (c.captureAgeMs != null) bits.push(`data ${TimeView.age(c.captureAgeMs)} old`);
+        const tail = document.createElement("span");
+        tail.className = "muted";
+        tail.textContent = bits.length ? " · " + bits.join(" · ") : "";
+        line.appendChild(tail);
+        view.appendChild(line);
+      }
+    }
+
+    function wsSignals(view, st) {
+      view.appendChild(wsHeading(`Recent run-log signals (last ${st.context.signalWindowHours}h)`));
+      view.appendChild(wsMuted("Warn/error events mentioning this entity across app runs — recent activity, not incident history or current status."));
+      const signals = st.context.signals;
+      if (!signals.length) return view.appendChild(wsMuted("No warnings or errors mentioning this entity in the window."));
+      const table = prepareTable(document.createElement("table"), "Recent run-log signals for entity " + st.entity);
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      for (const h of ["App", "Type", "Func", "Count", "Latest run"]) htr.appendChild(headCell(h));
+      thead.appendChild(htr); table.appendChild(thead);
+      const tb = document.createElement("tbody");
+      const frag = document.createDocumentFragment();
+      for (const b of signals) {
         const tr = document.createElement("tr");
         if (b.type === "ERROR" || b.type === "WARN") tr.className = "row-" + b.type;
         tr.appendChild(cell(b.app));
@@ -1947,7 +2070,7 @@
         const runTd = document.createElement("td");
         if (b.lastRunId) {
           const a = document.createElement("a");
-          a.href = runHref(b.lastRunId, b.lastInsertedAt);
+          a.href = runHref(b.lastRunId, b.lastInsertedAt, "entity:" + st.entity);
           a.textContent = "view ›";
           runTd.appendChild(a);
         } else { runTd.textContent = "—"; }
@@ -1959,24 +2082,102 @@
       appendTable(view, table);
     }
 
-    async function showSystem(systemId) {
+    function renderEntityWorkspace(view, st, focusMore) {
+      resetView(view);
+      view.appendChild(backLink());
+
+      const h2 = document.createElement("h2");
+      h2.style.fontSize = ".95rem";
+      h2.style.margin = ".4rem 0 .2rem";
+      h2.textContent = "Entity " + st.entity;
+      view.appendChild(h2);
+
+      const kind = st.context && st.context.entityKind;
+      const kindLabel = ENTITY_KIND_LABEL[kind];
+      const asOf = st.context ? st.context.asOf : st.incidentsAsOf;
+      view.appendChild(wsMuted(
+        (kindLabel ? `· ${kindLabel} ` : "") +
+        `· as of ${fmtTime(asOf)} · incidents from incident-engine · connectivity from alert.* · signals from util.app_run_logs`));
+
+      // Incidents first: the inventory that motivated the visit.
+      view.appendChild(wsHeading("Incidents"));
+      if (st.context && st.context.incidentSummary) wsIncidentSummary(view, st.context.incidentSummary);
+      else if (st.context) view.appendChild(wsMuted("No incident records for this entity."));
+      else if (st.contextError) view.appendChild(wsMuted("Couldn't load the incident summary, connectivity, and signal context. Incident records below are unaffected."));
+      if (st.incidentsError) view.appendChild(wsMuted("Couldn't load this entity's incident records."));
+      else if (st.incidents.length) wsIncidentTable(view, st);
+      else view.appendChild(wsMuted("No matching incident records."));
+
+      // Connectivity and signals only render from a loaded context; the combined
+      // endpoint's failure was already reported honestly above.
+      if (st.context) {
+        wsConnectivity(view, st.context.connectivity);
+        wsSignals(view, st);
+      }
+
+      if (focusMore) requestAnimationFrame(() =>
+        (view.querySelector("[data-entity-incidents-more]") || view.querySelector(".table-scroll"))?.focus());
+    }
+
+    async function showEntity(entityId) {
       const myReq = ++runReq;
       hideAllViews();
       const view = document.getElementById("system-view");
       view.hidden = false;
       window.scrollTo(0, 0);
-      connMessage(view, "Loading system…");
-      let res;
-      try { res = await fetch("/api/systems/" + encodeURIComponent(systemId)); }
-      catch { if (myReq === runReq) connMessage(view, "Couldn't load this system."); return; }
+      connMessage(view, "Loading entity workspace…");
+      const st = {
+        entity: entityId, req: myReq, context: null, contextError: false,
+        incidents: [], incidentsError: false, incidentsAsOf: null,
+        nextCursor: null, scopedTotal: null, loading: false,
+      };
+      entityWs = st;
+      // Both reads run in parallel; a refresh therefore replaces context and the
+      // first incident page together (atomic from the operator's view), and one
+      // source failing still leaves the other rendered with honest error text.
+      const [ctx, inc] = await Promise.allSettled([
+        fetch("/api/entities/" + encodeURIComponent(entityId)).then(async (res) => ({ res, body: res.ok ? await res.json() : null })),
+        fetch(entityIncidentsUrl(entityId, null)).then(async (res) => ({ res, body: res.ok ? await res.json() : null })),
+      ]);
       if (myReq !== runReq) return;
-      if (res.status === 400) return connMessage(view, "Invalid system id.");
-      if (!res.ok) return connMessage(view, "Couldn't load this system.");
-      let data;
-      try { data = await res.json(); }
-      catch { if (myReq === runReq) connMessage(view, "Couldn't load this system."); return; }
-      if (myReq !== runReq) return;
-      renderSystem(view, data);
+      if (ctx.status === "fulfilled" && ctx.value.res.status === 400) return connMessage(view, "Invalid entity id.");
+      if (ctx.status === "fulfilled" && ctx.value.res.status === 404) {
+        return connMessage(view, "No incident, connectivity, or recent signal data for this entity.");
+      }
+      if (ctx.status === "fulfilled" && ctx.value.body) st.context = ctx.value.body;
+      else st.contextError = true;
+      if (inc.status === "fulfilled" && inc.value.body) {
+        const data = inc.value.body;
+        st.incidents = Array.isArray(data.incidents) ? data.incidents : [];
+        st.nextCursor = data.nextCursor;
+        st.scopedTotal = data.scopedTotal == null ? null : data.scopedTotal;
+        st.incidentsAsOf = data.asOf;
+      } else st.incidentsError = true;
+      if (st.contextError && st.incidentsError) return connMessage(view, "Couldn't load this entity.");
+      renderEntityWorkspace(view, st);
+    }
+
+    async function loadMoreEntityIncidents() {
+      const st = entityWs;
+      if (!st || st.loading || !st.nextCursor || st.req !== runReq) return;
+      const view = document.getElementById("system-view");
+      st.loading = true;
+      renderEntityWorkspace(view, st);
+      let data = null;
+      try {
+        const res = await fetch(entityIncidentsUrl(st.entity, st.nextCursor));
+        if (res.ok) data = await res.json();
+      } catch { /* handled below */ }
+      if (st.req !== runReq) return;
+      st.loading = false;
+      if (!data) return renderEntityWorkspace(view, st, true);
+      const seen = new Set(st.incidents.map((i) => i.id));
+      for (const incident of (Array.isArray(data.incidents) ? data.incidents : [])) {
+        if (!seen.has(incident.id)) { seen.add(incident.id); st.incidents.push(incident); }
+      }
+      st.nextCursor = data.nextCursor;
+      st.scopedTotal = data.scopedTotal == null ? st.scopedTotal : data.scopedTotal;
+      renderEntityWorkspace(view, st, true);
     }
 
     // --- incidents views (Phase 19) ------------------------------------------
@@ -2032,9 +2233,12 @@
 
     // Entities are usually equipment ids (SME…) that have a cross-app system view;
     // __global__ (unattributable events) and anything else render as plain text.
+    // Any safe producer id now links to its workspace (Phase 32) — non-SME ids
+    // like __global__ have inspectable incident inventories too, honestly
+    // labeled by kind on the workspace itself.
     function entityCell(entity) {
-      if (Routes.safeId(entity) && entity.startsWith("SME")) return systemCell(entity);
-      return cell(entity === "__global__" ? "(global)" : entity || "—");
+      if (Routes.safeId(entity)) return systemCell(entity);
+      return cell(entity || "—");
     }
 
     function tile(label, n, cls, active, onClick) {
@@ -2443,8 +2647,8 @@
       else if (r.id === "connectivity") currentRefresh = showConnectivity;
       else if (r.id === "acq") currentRefresh = showAcqSystems;
       else if (r.id === "systems") currentRefresh = showSystems;
-      else if (r.id === "entity") currentRefresh = () => showSystem(r.params.entity);
-      else if (r.id === "system") currentRefresh = () => showSystem(r.params.system);
+      else if (r.id === "entity") currentRefresh = () => showEntity(r.params.entity);
+      else if (r.id === "system") currentRefresh = () => showEntity(r.params.system);
       else if (r.id === "incident-list") currentRefresh = showIncidents;
       else if (r.id === "incident") currentRefresh = () => showIncident(r.params.incident);
       else if (r.id === "appruns") currentRefresh = () => showAppRuns(r.params.app, appRunsState && appRunsState.app === r.params.app ? appRunsState.status : "all");
