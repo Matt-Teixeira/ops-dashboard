@@ -17,6 +17,13 @@ services:
       - "8080:8080"        # dashboard UI/API -- change host port if 8080 is taken
     command: ["node", "index.js", "serve"]
     restart: unless-stopped
+    # Cap container log growth (audit OPS-02) — tracked here, not in daemon.json,
+    # so a rebuilt server gets it for free. Takes effect at next recreate.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - pg_net
 
