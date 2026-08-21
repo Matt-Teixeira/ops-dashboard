@@ -18,6 +18,22 @@ const SAFE_TS = (expr) =>
   `CASE WHEN (${expr}) ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$' ` +
   `THEN (${expr})::timestamptz END`;
 
+// A NUL escape (backslash-u-0000) inside stored json (a producer logs raw
+// machine readings, NUL bytes included -- data_acquisition BACKLOG item 5)
+// makes EVERY json operator over that value throw 'unsupported Unicode escape
+// sequence' -- proven empirically to include bare navigation like ->0, so the
+// column must be neutralized BEFORE any operator touches it, not per-slice.
+// This froze the grid for two days after the 2026-08-19 migration.
+// The ::text cast is a plain serialization (json IS stored text) and never
+// throws; the replacement-char escape (backslash-u-FFFD) is the same length
+// and valid in every context (even directly after a literal backslash), so
+// the cast back to json cannot fail. The LIKE pre-check keeps clean rows
+// copy-free; only poisoned rows (a handful) pay for replace().
+// (Doubled backslashes below: JS template literal.)
+const SAFE_JSON = (expr) =>
+  `(CASE WHEN (${expr})::text LIKE '%\\u0000%' ` +
+  `THEN replace((${expr})::text, '\\u0000', '\\uFFFD')::json ELSE (${expr}) END)`;
+
 // One row per (app_name, job): the most recent run with inserted_at >= $1.
 // The cache (lib/run-cache.js) calls this for both the bootstrap scan (since =
 // now - retention) and each incremental tick (since = watermark - overlap). The
@@ -29,11 +45,13 @@ WITH recent AS (
     app_name,
     run_id,
     inserted_at,
-    COALESCE(NULLIF(verbose_log->0->'note'->'argv'->>2, ''), '(default)') AS job,
-    ${SAFE_TS("verbose_log->0->>'dt'")}                                   AS started_at,
-    ${SAFE_TS("verbose_log->-1->>'dt'")}                                  AS ended_at,
-    COALESCE(warn_error_logs, '[]'::json)                                 AS warn_error_logs
-  FROM util.app_run_logs
+    COALESCE(NULLIF(s.vl->0->'note'->'argv'->>2, ''), '(default)') AS job,
+    ${SAFE_TS("s.vl->0->>'dt'")}                                   AS started_at,
+    ${SAFE_TS("s.vl->-1->>'dt'")}                                  AS ended_at,
+    s.wel                                                          AS warn_error_logs
+  FROM util.app_run_logs,
+       LATERAL (SELECT ${SAFE_JSON("verbose_log")} AS vl,
+                       ${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")} AS wel) s
   WHERE inserted_at >= $1::timestamptz
 ),
 latest AS (
@@ -74,7 +92,7 @@ SELECT
   e->>'err_msg' AS err_msg,
   e->'note'     AS note
 FROM util.app_run_logs l,
-     LATERAL json_array_elements(COALESCE(l.warn_error_logs, '[]'::json)) e
+     LATERAL json_array_elements(${SAFE_JSON("COALESCE(l.warn_error_logs, '[]'::json)")}) e
 WHERE l.inserted_at > now() - ($1::int * interval '1 day')
 ORDER BY (e->>'dt')::timestamptz DESC
 LIMIT $2;
@@ -157,8 +175,8 @@ WITH page AS ${withJobType ? `MATERIALIZED ` : ``}(
     -- unaffected. $6 is a normalized enum ('all'|'error'|'issues'), never interpolated.
     AND (
       $6 = 'all'
-      OR ($6 = 'error'  AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))
-      OR ($6 = 'issues' AND EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' IN ('ERROR', 'WARN')))
+      OR ($6 = 'error'  AND EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' = 'ERROR'))
+      OR ($6 = 'issues' AND EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' IN ('ERROR', 'WARN')))
     )
   ORDER BY inserted_at DESC, run_id DESC
   LIMIT $5
@@ -167,8 +185,8 @@ SELECT
   run_id,
   to_char(inserted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS inserted_at_iso,
   CASE
-    WHEN EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR') THEN 'ERROR'
-    WHEN EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'WARN')  THEN 'WARN'
+    WHEN EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' = 'ERROR') THEN 'ERROR'
+    WHEN EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' = 'WARN')  THEN 'WARN'
     ELSE 'SUCCESS'
   END AS status,
   json_array_length(COALESCE(warn_error_logs, '[]'::json)) AS issue_count${withJobType ? `,
@@ -180,7 +198,7 @@ LEFT JOIN LATERAL (
   SELECT e->'note'->>'run_group' AS run_group,
          e->'note'->>'modality'  AS modality,
          e->'note'->>'schedule'  AS schedule
-  FROM json_array_elements(COALESCE(page.verbose_log, '[]'::json)) e
+  FROM json_array_elements(${SAFE_JSON("COALESCE(page.verbose_log, '[]'::json)")}) e
   WHERE e->>'func' = 'runJob'
   LIMIT 1
 ) rj ON true` : ``}
@@ -208,8 +226,8 @@ const APP_HEALTH_SQL = `
 SELECT
   app_name,
   count(*)::int AS runs,
-  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'ERROR'))::int AS errored,
-  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(COALESCE(warn_error_logs, '[]'::json)) e WHERE e->>'type' = 'WARN'))::int  AS warned
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' = 'ERROR'))::int AS errored,
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM json_array_elements(${SAFE_JSON("COALESCE(warn_error_logs, '[]'::json)")}) e WHERE e->>'type' = 'WARN'))::int  AS warned
 FROM util.app_run_logs
 WHERE inserted_at > $1::timestamptz
 GROUP BY app_name;
@@ -263,7 +281,7 @@ WITH ev AS (
     NULLIF(e->'note'->>'sme', '') AS sme,
     e->>'type'                    AS type
   FROM util.app_run_logs l,
-       LATERAL json_array_elements(COALESCE(l.warn_error_logs, '[]'::json)) e
+       LATERAL json_array_elements(${SAFE_JSON("COALESCE(l.warn_error_logs, '[]'::json)")}) e
   WHERE l.inserted_at > $1::timestamptz
 )
 SELECT
@@ -296,7 +314,7 @@ WITH ev AS (
     e->>'type'                            AS type,
     COALESCE(NULLIF(e->>'func', ''), '(none)') AS func
   FROM util.app_run_logs l,
-       LATERAL json_array_elements(COALESCE(l.warn_error_logs, '[]'::json)) e
+       LATERAL json_array_elements(${SAFE_JSON("COALESCE(l.warn_error_logs, '[]'::json)")}) e
   WHERE l.inserted_at > $2::timestamptz
     AND NULLIF(e->'note'->>'sme', '') = $1
 )

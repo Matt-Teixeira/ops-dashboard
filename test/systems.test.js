@@ -65,7 +65,9 @@ test("SYSTEMS_LATEST_SQL: window-bounded, unnests warn_error_logs, grouped, no v
   assert.ok(m, "SYSTEMS_LATEST_SQL template found");
   const sql = m[1];
   assert.match(sql, /inserted_at > \$1::timestamptz/, "window-bounded on inserted_at");
-  assert.match(sql, /json_array_elements\(COALESCE\(l\.warn_error_logs/, "unnests warn_error_logs (json)");
+  // SAFE_JSON NUL-sanitizer (BACKLOG item 5) wraps the argument; the invariant is
+  // that the unnest source is l.warn_error_logs, wherever it sits in the call.
+  assert.match(sql, /json_array_elements\([^)]*l\.warn_error_logs/, "unnests warn_error_logs (json)");
   assert.match(sql, /NULLIF\(e->'note'->>'sme', ''\)/, "system key is note.sme");
   assert.match(sql, /GROUP BY sme/, "per system");
   assert.match(sql, /LIMIT \$2/, "payload-capped");

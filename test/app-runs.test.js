@@ -139,6 +139,10 @@ test("buildAppRunsSql: partition-pruned, keyset, parameterized filter; lean path
   // CTE's rows (page.verbose_log) -- never the base table.
   assert.match(sql, /WITH page AS \$\{withJobType \? `MATERIALIZED ` : ``\}/, "page CTE materialized under withJobType");
   assert.ok(sql.indexOf("LIMIT $5") < sql.indexOf("LEFT JOIN LATERAL"), "page is LIMITed before the LATERAL");
-  assert.match(sql, /json_array_elements\(COALESCE\(page\.verbose_log/, "LATERAL consumes the materialized page, not the base table");
+  // The SAFE_JSON NUL-sanitizer (BACKLOG item 5) wraps the argument, so match on
+  // page.verbose_log appearing inside the json_array_elements call rather than as
+  // its immediate first argument -- the invariant is the SOURCE (page, not base).
+  assert.match(sql, /json_array_elements\([^)]*page\.verbose_log/, "LATERAL consumes the materialized page, not the base table");
+  assert.ok(!/json_array_elements\([^)]*\bl\.verbose_log/.test(sql), "LATERAL never reads verbose_log from the base table");
   assert.match(sql, /FROM page/, "outer select reads the page CTE");
 });
