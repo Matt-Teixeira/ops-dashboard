@@ -1,5 +1,21 @@
 # CLAUDE.md — ops-dashboard
 
+> **⚠ MID-MIGRATION (started 2026-08-26): dev/release paradigm.**
+> This app is being aligned to the fleet dev/release paradigm — spec:
+> `data_acquisition/docs/migration_CLAUDE.md` (Part 1 = conventions, Part 3 =
+> checklist); local references: `~/apps/data_acquisition` (pilot) and
+> `~/apps/monday`.
+>
+> - The editable tree is the dev clone at **`~/apps/ops-dashboard`**.
+>   **`/opt/apps/ops-dashboard` is frozen** — no commits land here. At cutover
+>   it becomes build output produced only by `build-release.sh`.
+> - Until this banner is removed, deployment/infra statements below (stock
+>   `node:lts` image, `user: "105:987"`, the `node_mod_cache` bind mount, the
+>   `/opt/run-logs/ops-dashboard` mount, `markdown/DEPLOYMENT.md`'s
+>   edit-in-place deploy/rollback) describe the **pre-migration state** and are
+>   being corrected in the commit that changes each of them. Where they
+>   disagree with the paradigm spec, the spec wins.
+
 Orientation for an AI assistant (or new contributor) picking this project up cold.
 
 ## What this project is
