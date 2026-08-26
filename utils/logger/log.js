@@ -31,7 +31,17 @@ function makeRunLog(job) {
     },
   };
   // argv[0]/[1] kept real; argv[2] = job so the grid buckets this run correctly.
-  api.add("INFO", "on_boot", "CALL", { argv: [process.argv[0], process.argv[1], job] });
+  // USER_ID / RELEASE_SHA: fleet provenance keys (same note shape as
+  // data_acquisition's onBoot env_note). RELEASE_SHA IS STAMPED INTO THE
+  // DEPLOYED .env BY build-release.sh AND IS ABSENT IN A DEV TREE — this field
+  // ties every heartbeat row to the commit that produced it:
+  //   verbose_log -> 0 -> 'note' ->> 'RELEASE_SHA'
+  // A scheduled row reading 'dev-tree' means production is running a dev copy.
+  api.add("INFO", "on_boot", "CALL", {
+    argv: [process.argv[0], process.argv[1], job],
+    USER_ID: process.env.USER_ID,
+    RELEASE_SHA: process.env.RELEASE_SHA || "dev-tree",
+  });
   return api;
 }
 

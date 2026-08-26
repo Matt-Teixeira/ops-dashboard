@@ -491,6 +491,14 @@ function buildApp() {
 
 function start() {
   const port = Number(process.env.PORT || 8080);
+  // Release provenance boot line: build-release.sh stamps RELEASE_SHA into the
+  // DEPLOYED .env; a dev tree has no key and prints 'dev-tree'. Captured by the
+  // container json-file log (capped 10m x3 in compose), it records which commit
+  // this long-running process is serving. The self-log heartbeat carries the
+  // same fields per run (utils/logger/log.js on_boot note).
+  console.log(
+    `[ops-dashboard] boot release_sha=${process.env.RELEASE_SHA || "dev-tree"} user_id=${process.env.USER_ID || "(unset)"}`
+  );
   const app = buildApp();
   // Listen first so /healthz is up immediately and the grid serves 503-warming
   // during the bootstrap. The single interval drives bootstrap-then-ticks (and

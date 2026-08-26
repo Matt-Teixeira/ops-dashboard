@@ -20,6 +20,15 @@ test("the grid can derive job: first event note.argv[2] === the heartbeat job", 
   assert.equal(row.verbose_log[0].note.argv[2], JOB);
 });
 
+test("the boot note carries release provenance; RELEASE_SHA defaults to dev-tree", () => {
+  // RELEASE_SHA is stamped into the deployed .env by build-release.sh and is
+  // absent in a dev tree (as in this test env) -> must read "dev-tree", never
+  // undefined. Fleet query shape: verbose_log->0->'note'->>'RELEASE_SHA'.
+  const note = buildHeartbeat(healthyHealth).verbose_log[0].note;
+  assert.equal(note.RELEASE_SHA, process.env.RELEASE_SHA || "dev-tree");
+  assert.ok("USER_ID" in note);
+});
+
 test("a healthy beat has no WARN/ERROR events -> derived status SUCCESS", () => {
   const row = buildHeartbeat(healthyHealth);
   assert.equal(row.warn_error_logs.length, 0);
