@@ -88,5 +88,6 @@ time. The system lives at the repo root:
 
 Before any change: read `markdown/FLOW.md`, the relevant `docs/`, the current
 phase prompt, and recent `PHASE_LOG.md` entries. Confirm schema assumptions
-against the live DB before writing query logic. Next planned work is **Phase 4 —
-incremental summary table** (`prompts/prompt_4_summary_table.txt`).
+against the live DB before writing query logic. For what's next, check
+`markdown/PROMPTS.md` — the roadmap and per-phase status live there, not here
+(a hardcoded "next phase" in this file went stale 28 phases ago).

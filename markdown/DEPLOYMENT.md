@@ -1,89 +1,129 @@
 # Deployment & Smoke-Test Runbook
 
-`ops-dashboard` runs in Docker on the same host as the rest of `/opt/apps`,
-attached to the external `pg_net` network. It is a **long-running service**
-(`docker compose up -d`), unlike the suite's one-shot batch apps. `node` is not
-installed on the host — all build/run happens in containers.
+`ops-dashboard` follows the fleet **dev/release paradigm**
+(`data_acquisition/docs/migration_CLAUDE.md`, Part 1). It is the suite's one
+**long-running service** (`docker compose up -d`, `restart: unless-stopped`),
+attached to the external `pg_net` network. `node` is not installed on the
+host — all build/run happens in containers.
+
+**The two copies:**
+
+| Copy | Path | Compose project | Port | Identity |
+| ---- | ---- | --------------- | ---- | -------- |
+| Dev clone (editable git repo) | `~/apps/ops-dashboard` | `ops-dashboard-dev` | `8081` | `RUN_USER=<you>` |
+| Release (build output, never edited) | `/opt/apps/ops-dashboard` | `ops-dashboard` | `8080` | svc (entrypoint default) |
+
+`/opt/apps/ops-dashboard` is produced **only** by `build-release.sh`. Never
+edit it, never `git pull` in it (it is not a repo), never run dev commands in
+it. A `RELEASE_SHA` of `dev-tree` in the heartbeat record means production is
+running the wrong copy.
+
+## Deploying a change (the only production deploy path)
+
+```bash
+cd ~/apps/ops-dashboard
+# ... commit your change, push ...
+bash preflight-check.sh          # expect ZERO warnings
+bash build.sh                    # dev image; run the dev smoke if the change warrants it
+bash build-release.sh            # guarded release; see below
+```
+
+`build-release.sh` refuses a dirty tree (commit or stash first — `--allow-dirty`
+is an emergency override, never habit), mirrors the working tree to
+`/opt/apps/ops-dashboard` (preserving `node_modules` as an install cache),
+applies the `#RELEASE:` overrides to the deployed `.env` (`USER_ID=svc`,
+`COMPOSE_PROJECT_NAME=ops-dashboard`, `HOST_PORT=8080`), stamps `RELEASE_SHA`,
+builds `ops-dashboard:svc` as svc, and **restarts the service** (`docker
+compose up -d` from the release copy — recreates only when config/image
+changed; expect a few seconds of outage). Well under the 15-minute heartbeat
+staleness budget, so the dashboard's own grid row stays green through a deploy.
+
+Then verify:
+
+```bash
+grep '^RELEASE_SHA=' /opt/apps/ops-dashboard/.env    # the commit you meant to ship
+curl -s localhost:8080/healthz                        # {"ok":true}
+docker logs ops-dashboard-app-1 2>&1 | grep 'boot release_sha'
+(cd /opt/apps/ops-dashboard && bash preflight-check.sh)   # exercises the release-copy branch
+```
+
+And in the database (the record, not the intent) — within ~10 minutes the
+heartbeat must carry the released SHA:
+
+```sql
+SELECT (verbose_log->0->'note'->>'RELEASE_SHA') sha,
+       (verbose_log->0->'note'->>'USER_ID') uid, COUNT(*), MAX(inserted_at)
+FROM util.app_run_logs
+WHERE app_name='ops-dashboard' AND inserted_at > now() - interval '1 hour'
+GROUP BY 1, 2;
+```
 
 ## One-time setup
 
 ```bash
-# 1. Least-privilege DB role (run as a superuser, once):
-psql -h <host> -U postgres -d staging -v ro_pw='<choose-strong-pw>' \
-  -f db/setup-readonly-role.sql
+# 1. Least-privilege DB roles (superuser, once; password-file pattern):
+docker exec -i pg_db psql -U postgres -d staging -v ro_pw="$(sudo cat /root/ops_dashboard_ro_pw)" < db/setup-readonly-role.sql
+# Only if SELF_LOG_ENABLED=true:
+docker exec -i pg_db psql -U postgres -d staging -v rw_pw="$(sudo cat /root/ops_dashboard_rw_pw)" < db/setup-writer-role.sql
 
-# 2. Bind-mount target dirs, owned by the svc user/group (UID 105 / GID 987) so
-#    the container (which runs as 105:987) can write node_modules into the cache:
-sudo install -d -o 105 -g 987 \
-  /opt/resources/node_mod_cache/ops-dashboard /opt/run-logs/ops-dashboard
-#    (If you're in the docker group and the parent dirs are setgid + group-writable,
-#     plain `install -d` also works, since the container runs as GID 987.)
-
-# 3. Env file:
-cp .env.example .env
-#    set PGUSER=ops_dashboard_ro and PGPASSWORD=<the role's password>
+# 2. Dev clone + .env (see README "First-time setup").
 ```
 
-## Install & start
+No host directories are needed: the app writes no files (self-log goes to the
+DB), and `node_modules` lives in-tree in each copy.
+
+### Grant changes (e.g. connectivity, acquisition endpoints)
+
+`db/setup-readonly-role.sql` is idempotent. When a phase widens the read-only
+role's grants, **re-run it as a superuser BEFORE releasing the new code** —
+otherwise the new endpoint returns 500 (`permission denied`) until the grant
+lands:
 
 ```bash
-docker compose run --rm app npm install   # installs into the bind-mounted cache
-docker compose up -d                       # starts the service on the published port
-docker compose logs --no-log-prefix | tail # expect: "listening on :8080"
+docker exec -i pg_db psql -U postgres -d staging -v ro_pw="$(sudo cat /root/ops_dashboard_ro_pw)" < db/setup-readonly-role.sql
+bash build-release.sh        # release + restart picks up the new code
 ```
 
-Source is bind-mounted, so most code changes need only `docker compose restart`.
-A `.env` change needs `docker compose up -d` (recreate). A dependency change needs
-the `npm install` step again.
+After any **staging DB reset**, re-run both role scripts (grants are wiped
+with the roles' target objects) and restart the service, or the dashboard
+serves empty data.
 
-### Grant changes (e.g. Phase 10 connectivity, Phase 15 acquisition)
-
-`db/setup-readonly-role.sql` is idempotent. When a phase widens the read-only role's
-grants (Phase 10 added `SELECT` on the `alert.*` connectivity tables; Phase 15 added
-`SELECT` on `stats.acquisition_history`), **re-run it as a superuser BEFORE restarting
-with the new code** — otherwise the new endpoint returns 500 (`permission denied for
-schema alert`/`stats`) until the grant lands:
+## Smoke test (dev clone, before releasing anything risky)
 
 ```bash
-psql -h <host> -U postgres -d staging -v ro_pw='<existing-pw>' \
-  -f db/setup-readonly-role.sql      # ro_pw is required by the script; reuse the current password
-# then, as ops_dashboard_ro, confirm the new reads work:
-#   SELECT count(*) FROM alert.offline_hhm_conn;  SELECT count(*) FROM alert.offline_mmb_conn;
-docker compose restart
+RUN_USER=$(id -un) docker compose up -d      # project ops-dashboard-dev, :8081
+curl -s localhost:8081/healthz               # {"ok":true}
+# Grid warms in the background (bootstrap scans the retention window; ~1-2 min
+# on this data). Until then the endpoint returns 503 "warming":
+curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" localhost:8081/api/jobs/latest
+curl -s "localhost:8081/api/errors?limit=5"
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/runs/not-a-uuid   # expect 400
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/connectivity      # 500 => alert grant missing
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/acquisition/systems  # 500 => stats grant missing
+docker compose down
 ```
 
-## Smoke test (run after any deploy that touches routing, queries, creds, or compose)
-
-```bash
-curl -s localhost:8080/healthz                       # {"ok":true}
-
-# Grid warms in the background (first refresh ~tens of seconds). Until then the
-# endpoint returns 503 "warming". Poll until 200, then expect a fast response:
-curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" localhost:8080/api/jobs/latest
-
-curl -s "localhost:8080/api/errors?limit=5"          # recent WARN/ERROR events
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/runs/not-a-uuid   # expect 400
-
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/connectivity      # expect 200 (500 => alert grant not applied)
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/api/acquisition/systems  # expect 200 (500 => stats grant not applied)
-```
-
-A green smoke test = healthz ok, grid serves 200 in well under a second once
-warm, error feed returns events, and input validation rejects bad ids.
+A dev run against the shared staging DB is a real run: with
+`SELF_LOG_ENABLED=true` it writes heartbeat rows under
+`app_name=ops-dashboard`, distinguishable by `RELEASE_SHA=dev-tree` /
+`USER_ID=<you>` in the boot note. That is expected for a deliberate smoke
+test; don't leave a dev instance running unattended.
 
 ## Rollback
 
 ```bash
-git checkout <previous-good-sha>
-docker compose restart        # or `up -d` if .env/compose changed
+cd ~/apps/ops-dashboard
+git revert <bad-sha>       # or: git checkout -b rollback <previous-good-sha>
+bash build-release.sh      # re-release; never edit /opt/apps directly
 ```
 
 ## Notes
 
-- The published host port is set in `docker-compose.yaml` (`8080:8080`); change the
-  host side if 8080 is taken.
-- Deployment is host-internal with no auth, by decision. If exposure changes, add
-  auth in its own phase before publishing more broadly (see PROMPTS open decisions).
+- The published production port is `8080` (dev `8081`), host-internal with no
+  auth, by decision. If exposure changes, add auth in its own phase before
+  publishing more broadly (see PROMPTS open decisions).
+- Container logs are capped in compose (json-file, 10m × 3) and carry the boot
+  provenance line — they are the console record of which commit is serving.
 - The heavy grid query runs on a background interval, not per request — a slow
-  refresh does not slow user requests, but watch the refresh duration in logs as the
-  table grows (the Phase 4 summary table retires this cost).
+  refresh does not slow user requests; watch the refresh duration in logs as
+  the table grows.

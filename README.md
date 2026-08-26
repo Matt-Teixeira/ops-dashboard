@@ -35,52 +35,61 @@ thing to understand:
 > running between cron ticks.
 >
 > **ops-dashboard is a long-running service.** It starts with `docker compose up -d`,
-> the container **stays up** serving HTTP on `:8080` (`command: node index.js serve`,
+> the container **stays up** serving HTTP (`command: node index.js serve`,
 > `restart: unless-stopped`), and you manage it with `up` / `down` / `restart` / `logs`
-> — **not** `run --rm`. The one place the batch pattern still applies is the dependency
-> install (a one-shot `run --rm`, below).
+> — **not** `run --rm`.
 
-### Everyday operations
+It follows the fleet **dev/release paradigm** (`data_acquisition/docs/migration_CLAUDE.md`):
+the editable git clone lives at `~/apps/ops-dashboard`; `/opt/apps/ops-dashboard` is
+build output produced only by `build-release.sh`. The dev clone and the release run as
+separate compose projects on separate host ports (`ops-dashboard-dev` on `:8081` vs
+`ops-dashboard` on `:8080`), split by `#RELEASE:` overrides in `.env`.
+
+### Everyday operations (dev clone)
 
 | Command | When to use it |
 | --- | --- |
-| `docker compose up -d` | Start the service (also the way to **apply an `.env` change** — it recreates the container) |
-| `docker compose ps` | Check it's up and which ports are published |
-| `docker compose logs -f` | Tail logs (boot line, grid refreshes, heartbeat) |
-| `docker compose restart` | Reload after a **code** change — source is bind-mounted (`./:/workspace`), so no rebuild is needed |
-| `docker compose run --rm app npm install` | Reinstall deps after a `package.json` change (one-shot, like the batch apps; writes into the cached `node_modules`) |
-| `docker compose down` | Stop and remove the container |
+| `bash preflight-check.sh` | Validate env + authenticated DB checks; a clean run reports **zero warnings** |
+| `bash build.sh` | Install deps in-tree + build `ops-dashboard:<you>` (after code/dep changes) |
+| `RUN_USER=<you> docker compose up -d` | Start the dev service on `:8081` (also applies an `.env` change — recreates) |
+| `docker compose ps` / `logs -f` | Check it's up / tail logs (boot provenance line, grid refreshes, heartbeat) |
+| `docker compose restart` | Reload after a **code** change — source is bind-mounted, no rebuild needed (dev only) |
+| `docker compose down` | Stop and remove the dev container |
+| `bash build-release.sh` | Cut a release: mirrors the clean tree to `/opt/apps`, stamps `RELEASE_SHA`, builds `ops-dashboard:svc`, **restarts the production service** |
 
-What's bind-mounted (see `docker-compose.yaml`):
+What's bind-mounted (see `docker-compose.yaml`): `./ → /workspace` (source; deps live
+in-tree in `node_modules/`, installed by `build.sh`) and `/opt/resources/ssl` (read-only,
+the PG cert). The app writes no files — its only run record is the self-log heartbeat in
+`util.app_run_logs`.
 
-- `./ → /workspace` — the source, so code edits take effect on `restart` with no image build.
-- `/opt/resources/node_mod_cache/ops-dashboard → /workspace/node_modules` — deps live in
-  the host cache (install once into it, rather than baking an image).
-- `/opt/run-logs/ops-dashboard` and `/opt/resources/ssl` (read-only, the PG cert).
+It attaches to the external **`pg_net`** network (DB reachable at `pg_db:5432`). Identity
+comes from `entrypoint.sh`: production omits `RUN_USER` and defaults to **svc**; dev runs
+pass `RUN_USER=<you>` so file ownership matches the host.
 
-It attaches to the external **`pg_net`** network (DB reachable at `pg_db:5432`), runs as
-`user: "105:987"` (svc UID / docker GID), and publishes host port `8080`.
-
-## First-time setup
+## First-time setup (dev clone)
 
 ```bash
-# 1. Env file — copy and fill in the secrets (see a sibling app's .env for the PG password).
+git clone git@github.com:Matt-Teixeira/ops-dashboard.git ~/apps/ops-dashboard
+cd ~/apps/ops-dashboard
+
+# 1. Env file — copy and fill in (identity keys + secrets; the role passwords
+#    live in /root/ops_dashboard_{ro,rw}_pw, or copy from the release .env).
 cp .env.example .env
 
-# 2. One-time host dirs (bind-mount targets), owned by the service user/group.
-sudo install -d -o 105 -g 987 \
-  /opt/resources/node_mod_cache/ops-dashboard /opt/run-logs/ops-dashboard
+# 2. Build (deps in-tree + image ops-dashboard:<you>) and validate.
+bash build.sh
+bash preflight-check.sh          # expect ZERO warnings
 
-# 3. Install deps into the cache (one-shot container; the only `run --rm` here).
-docker compose run --rm app npm install
+# 3. Start the dev service (project ops-dashboard-dev, port 8081).
+RUN_USER=$(id -un) docker compose up -d
 
-# 4. Start the long-running service.
-docker compose up -d
-
-# 5. Smoke test.
-curl localhost:8080/healthz                 # {"ok":true}
-curl -s localhost:8080/api/jobs/latest | head -c 200
+# 4. Smoke test.
+curl localhost:8081/healthz                 # {"ok":true}
+curl -s localhost:8081/api/jobs/latest | head -c 200   # 503 "warming" briefly, then 200
 ```
+
+Production deploys are `bash build-release.sh` from a clean, pushed tree — see
+`markdown/DEPLOYMENT.md`.
 
 ## Accessing the dashboard
 
