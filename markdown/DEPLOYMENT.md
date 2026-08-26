@@ -34,9 +34,13 @@ is an emergency override, never habit), mirrors the working tree to
 applies the `#RELEASE:` overrides to the deployed `.env` (`USER_ID=svc`,
 `COMPOSE_PROJECT_NAME=ops-dashboard`, `HOST_PORT=8080`), stamps `RELEASE_SHA`,
 builds `ops-dashboard:svc` as svc, and **restarts the service** (`docker
-compose up -d` from the release copy — recreates only when config/image
-changed; expect a few seconds of outage). Well under the 15-minute heartbeat
-staleness budget, so the dashboard's own grid row stays green through a deploy.
+compose up -d` from the release copy). The recreate happens on **every**
+release — the freshly stamped `RELEASE_SHA` is part of the container's
+`env_file`, so even a docs-only release changes the container env (observed
+2026-08-26; the upside is the boot line always matches the deployed commit).
+Expect a few seconds of API outage plus a grid re-warm (~1–2 min of 503
+"warming"). Well under the 15-minute heartbeat staleness budget, so the
+dashboard's own grid row stays green through a deploy.
 
 Then verify:
 
