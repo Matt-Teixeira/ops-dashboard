@@ -32,6 +32,12 @@ contract with safe placeholders.
 | `SELF_LOG_INTERVAL_MS` | Heartbeat interval | default `300000` (5 min); must align with the `ops-dashboard/heartbeat` cadence in `config/schedules.js` |
 | `PG_WRITER_USER` | Writer role | `ops_dashboard_rw` — EXECUTE-only on `ops.log_ops_dashboard_run`; created by `db/setup-writer-role.sql`. No fallback chain |
 | `PG_WRITER_PASSWORD` | Writer password | secret; `.env` only |
+| `USER_ID` | Build/run identity | image tag `ops-dashboard:${USER_ID}` + build LABEL. Dev = your username; release = `svc` via `#RELEASE:` |
+| `COMPOSE_PROJECT_NAME` | Compose project split | dev `ops-dashboard-dev` / release `ops-dashboard` (via `#RELEASE:`). Compose fails safe to the dev value — without the split, a dev `up -d` would recreate the production container (same dir basename ⇒ same default project) |
+| `HOST_PORT` | Published host port | dev `8081` / release `8080` (via `#RELEASE:`); fails safe to `8081`. Container side is always `PORT` (8080) |
+| `DOCKER_GID` `UID_0` `UID_1` | Docker build args | host identity facts (docker GID, svc UID, your UID); REQUIRED, no defaults — a missing value fails the build instead of silently breaking bind-mount permissions. Same on dev and release (no `#RELEASE:`) |
+| `RELEASE_SHA` | Release provenance | **injected into the deployed `.env` by `build-release.sh`** — never set by hand; absent in a dev tree (recorded as `dev-tree`) |
+| `RUN_USER` | Runtime-only | never in `.env`; `entrypoint.sh` defaults it to `svc`, dev runs pass it on the command line |
 
 ## Rules
 

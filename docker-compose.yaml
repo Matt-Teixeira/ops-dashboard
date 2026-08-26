@@ -1,20 +1,39 @@
+# no "version" key (obsolete in compose v2)
+#
+# Project name: the dev clone (~/apps/ops-dashboard) and the release copy
+# (/opt/apps/ops-dashboard) share a directory basename, hence the same default
+# compose project — a dev `up -d` would otherwise RECREATE the production
+# container. COMPOSE_PROJECT_NAME splits them and FAILS SAFE to the dev value,
+# mirroring the fleet's ${LOG_DIR:-dev-path} doctrine; the release .env gets
+# `ops-dashboard` via its #RELEASE: override.
+name: ${COMPOSE_PROJECT_NAME:-ops-dashboard-dev}
+
 services:
   app:
-    image: node:lts
-    user: "105:987"
+    image: ops-dashboard:${USER_ID}
+    build:
+      context: .
+      args:
+        USER_ID: ${USER_ID}
+        DOCKER_GID: ${DOCKER_GID}
+        UID_0: ${UID_0}
+        UID_1: ${UID_1}
     working_dir: /workspace
     env_file:
       - .env
     environment:
-      HOME: /tmp
+      # Intentionally unset in .env: empty -> entrypoint.sh defaults to svc.
+      # Dev runs pass it on the command line. ':-' silences the compose WARN.
+      RUN_USER: ${RUN_USER:-}
       NPM_CONFIG_CACHE: /tmp/.npm
     volumes:
       - ./:/workspace
-      - /opt/resources/node_mod_cache/ops-dashboard:/workspace/node_modules
-      - /opt/run-logs/ops-dashboard:/opt/run-logs/ops-dashboard
       - /opt/resources/ssl:/opt/resources/ssl:ro
     ports:
-      - "8080:8080"        # dashboard UI/API -- change host port if 8080 is taken
+      # Container always listens on PORT (8080). The HOST side fails safe to
+      # 8081 (dev) so a dev `up` can never shadow production :8080; the release
+      # .env carries HOST_PORT=8080 via #RELEASE:.
+      - "${HOST_PORT:-8081}:8080"
     command: ["node", "index.js", "serve"]
     restart: unless-stopped
     # Cap container log growth (audit OPS-02) — tracked here, not in daemon.json,
