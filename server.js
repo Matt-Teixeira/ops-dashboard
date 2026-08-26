@@ -503,14 +503,45 @@ function start() {
   // Listen first so /healthz is up immediately and the grid serves 503-warming
   // during the bootstrap. The single interval drives bootstrap-then-ticks (and
   // retries the bootstrap if the first attempt fails) -- never block listen on it.
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`[ops-dashboard] listening on :${port}`);
   });
   refreshOnce();
   const timer = setInterval(refreshOnce, GRID_REFRESH_MS);
   if (timer.unref) timer.unref();
 
-  if (SELF_LOG_ENABLED) startSelfLog();
+  const selfLogTimer = SELF_LOG_ENABLED ? startSelfLog() : null;
+
+  // Graceful shutdown (fleet paradigm: signal -> finalize once -> honest exit).
+  // gosu execs node, so node is PID 1 in the container and receives docker
+  // stop's SIGTERM directly. Once-guarded: a second signal must not re-enter.
+  // No final heartbeat is written on the way down — by this app's own design a
+  // stopped dashboard simply stops beating and its grid row ages to STALE
+  // (see lib/self-log.js) — so shutdown only has to stop timers, close the
+  // listener, and drain the pg-promise pools. The force-exit timer (8s) stays
+  // under docker's 10s grace so a hung close still exits non-zero here rather
+  // than being SIGKILLed with no trace.
+  let shutting_down = false;
+  const shutdown = (signal) => {
+    if (shutting_down) return;
+    shutting_down = true;
+    console.log(`[ops-dashboard] ${signal} received — shutting down`);
+    clearInterval(timer);
+    if (selfLogTimer) clearInterval(selfLogTimer);
+    const force = setTimeout(() => {
+      console.error("[ops-dashboard] shutdown did not complete in 8s — forcing exit");
+      process.exit(1);
+    }, 8000);
+    if (force.unref) force.unref();
+    server.close(() => {
+      const pgp = require("./db/pgp");
+      pgp.end(); // drains the read-only pool and (if created) the writer pool
+      console.log("[ops-dashboard] shutdown complete");
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 // Self-monitoring heartbeat (Phase 7). Writes one ops-dashboard run per interval via
@@ -539,6 +570,7 @@ function startSelfLog() {
   const timer = setInterval(beat, SELF_LOG_INTERVAL_MS);
   if (timer.unref) timer.unref();
   console.log(`[ops-dashboard] self-logging on: heartbeat every ${SELF_LOG_INTERVAL_MS}ms as ops-dashboard/${selfLog.JOB}`);
+  return timer; // start() clears it on graceful shutdown
 }
 
 module.exports = { buildApp, start, refreshOnce };
