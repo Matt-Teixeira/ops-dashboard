@@ -8,6 +8,53 @@ history so the log is complete; they have no `prompts/` file.
 
 ---
 
+# Infra migration — fleet dev/release paradigm (not a numbered phase)
+
+Date: 2026-08-26
+
+Status: Completed (cutover verified same-day; 288/day heartbeat cadence check
+the following morning)
+
+Spec: `data_acquisition/docs/migration_CLAUDE.md` (Part 1 conventions, Part 3
+checklist); references `~/apps/data_acquisition` (pilot) + `~/apps/monday`.
+Fleet record: data_acquisition `BACKLOG.md` item 6o and
+`docs/docker_server_full_setup_2.1.md` (ops-dashboard section + build matrix).
+
+Git commits: b2aef71 → 55e14ba (9 commits on main). Released at
+`RELEASE_SHA=55e14ba`.
+
+## What changed
+
+- The editable tree moved to the dev clone `~/apps/ops-dashboard`;
+  `/opt/apps/ops-dashboard` is now build output produced only by
+  `build-release.sh` (clean-tree guard, `#RELEASE:` env transform,
+  `RELEASE_SHA` stamp, svc image build, **service restart step**).
+- Own image `ops-dashboard:${USER_ID}` (gosu entrypoint, svc default) replaced
+  stock `node:lts` + `user: "105:987"`; in-tree `node_modules` replaced the
+  shared cache mount; the vestigial `/opt/run-logs` mount was dropped (the app
+  writes no files).
+- Dev/prod split for a service: compose project `ops-dashboard-dev` on `:8081`
+  vs `ops-dashboard` on `:8080`, failing safe to dev — without it a dev
+  `up -d` recreates the production container.
+- Provenance: heartbeat boot note + console boot line carry
+  `RELEASE_SHA`/`USER_ID` (`dev-tree` in a dev tree). Graceful SIGTERM/SIGINT
+  shutdown added (verified: docker stop 0.7s, exit 0).
+- `preflight-check.sh` added (39/0/0 both copies; sibling-container PG auth
+  for both roles, writer auth-only). `DEPLOYMENT.md` rewritten as the release
+  runbook — the edit-in-place deploy and in-tree rollback it documented are
+  retired.
+
+## Validation
+
+Dev round-trip on :8081 (heartbeat `dev-tree|matt-teixeira`, prod untouched);
+guard negative test (dirty tree refused, exit 1, nothing touched); tar content
+verified equal to `git ls-files` + `.env` by listing diff; release round-trip
+(zero drift vs dev tree, boot line + heartbeats `55e14ba|svc`, grid warm 200
+in ~3ms, release-copy preflight 0 warnings); kill test clean. Unit suite
+172/172.
+
+---
+
 # Phase 32 — Entity Workspace & Incident Drill-Down Integration
 
 Date: 2026-07-24
