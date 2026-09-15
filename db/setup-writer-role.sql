@@ -71,7 +71,7 @@ REVOKE ALL ON SCHEMA util                  FROM ops_dashboard_rw;
 REVOKE ALL ON ALL TABLES    IN SCHEMA ops  FROM ops_dashboard_rw;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ops  FROM ops_dashboard_rw;
 REVOKE ALL ON SCHEMA ops                   FROM ops_dashboard_rw;
-GRANT  CONNECT ON DATABASE staging TO ops_dashboard_rw;
+GRANT  CONNECT ON DATABASE dev TO ops_dashboard_rw;
 GRANT  USAGE   ON SCHEMA ops       TO ops_dashboard_rw;
 GRANT  EXECUTE ON FUNCTION ops.log_ops_dashboard_run(uuid, json, json) TO ops_dashboard_rw;
 

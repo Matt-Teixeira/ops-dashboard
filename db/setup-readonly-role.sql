@@ -39,7 +39,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_dashboard_ro')
 -- Ensure the password is set (idempotent; safe whether or not the role existed).
 ALTER ROLE ops_dashboard_ro LOGIN PASSWORD :'ro_pw';
 
-GRANT CONNECT ON DATABASE staging TO ops_dashboard_ro;
+GRANT CONNECT ON DATABASE dev TO ops_dashboard_ro;
 GRANT USAGE   ON SCHEMA   util     TO ops_dashboard_ro;
 GRANT SELECT  ON util.app_run_logs TO ops_dashboard_ro;
 
