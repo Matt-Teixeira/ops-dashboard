@@ -1,7 +1,7 @@
 -- db/setup-readonly-role.sql
 -- One-time setup of the least-privilege role ops-dashboard connects as.
 -- Run as a superuser against the database that holds util.app_run_logs:
---   psql -h <host> -U postgres -d staging -v ro_pw='choose-a-strong-password' \
+--   psql -h <host> -U postgres -d <DB_NAME> -v ro_pw='choose-a-strong-password' \
 --     -f db/setup-readonly-role.sql
 --
 -- The dashboard is read-only, so its credential should be too. This role can
@@ -39,7 +39,8 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ops_dashboard_ro')
 -- Ensure the password is set (idempotent; safe whether or not the role existed).
 ALTER ROLE ops_dashboard_ro LOGIN PASSWORD :'ro_pw';
 
-GRANT CONNECT ON DATABASE dev TO ops_dashboard_ro;
+-- CONNECT on the database this script runs in, whatever its name.
+SELECT format('GRANT CONNECT ON DATABASE %I TO ops_dashboard_ro', current_database()) \gexec
 GRANT USAGE   ON SCHEMA   util     TO ops_dashboard_ro;
 GRANT SELECT  ON util.app_run_logs TO ops_dashboard_ro;
 

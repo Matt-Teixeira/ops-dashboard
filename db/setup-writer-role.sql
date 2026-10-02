@@ -1,7 +1,7 @@
 -- db/setup-writer-role.sql
 -- One-time setup of the ONLY sanctioned write path for ops-dashboard self-logging.
 -- Run as a superuser against the DB that holds util.app_run_logs:
---   psql -h <host> -U postgres -d staging -v rw_pw='choose-a-strong-password' \
+--   psql -h <host> -U postgres -d <DB_NAME> -v rw_pw='choose-a-strong-password' \
 --     -f db/setup-writer-role.sql
 --
 -- Design (Phase 7): the dashboard is read-only over pipeline data; the one exception
@@ -71,7 +71,8 @@ REVOKE ALL ON SCHEMA util                  FROM ops_dashboard_rw;
 REVOKE ALL ON ALL TABLES    IN SCHEMA ops  FROM ops_dashboard_rw;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ops  FROM ops_dashboard_rw;
 REVOKE ALL ON SCHEMA ops                   FROM ops_dashboard_rw;
-GRANT  CONNECT ON DATABASE dev TO ops_dashboard_rw;
+-- CONNECT on the database this script runs in, whatever its name.
+SELECT format('GRANT CONNECT ON DATABASE %I TO ops_dashboard_rw', current_database()) \gexec
 GRANT  USAGE   ON SCHEMA ops       TO ops_dashboard_rw;
 GRANT  EXECUTE ON FUNCTION ops.log_ops_dashboard_run(uuid, json, json) TO ops_dashboard_rw;
 
